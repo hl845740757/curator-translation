@@ -1,0 +1,27 @@
+h1. Utilities
+
+h2. Test Server
+In the curator\-test sub\-model the {{TestingServer}} class is provided. This class creates a local, in\-process ZooKeeper server that can be used for testing.
+
+h2. Test Cluster
+In the curator\-test sub\-model the {{TestingCluster}} class is provided. This class creates an internally running ensemble of ZooKeeper servers.
+
+h2. ZKPaths
+Various static methods to help with using ZooKeeper ZNode paths:
+
+* getNodeFromPath: Given a full path, return the node name. i.e. "/one/two/three" will return "three"
+* mkdirs: Make sure all the nodes in the path are created.
+* getSortedChildren: Return the children of the given path sorted by sequence number
+* makePath: Given a parent path and a child node, create a combined full path
+
+h2. BlockingQueueConsumer
+
+See: *[[DistributedQueue|curator-recipes/distributed-queue.html]]* and *[[DistributedPriorityQueue|curator-recipes/distributed-priority-queue.html]]*
+
+A queue consumer that provides behavior similar to a the JDK's BlockingQueue.
+
+h2. QueueSharder
+
+Due to limitations in ZooKeeper's transport layer, a single queue will break if it has more than 10K\-ish items in it. This class
+provides a facade over multiple distributed queues. It monitors the queues and if any one of them goes over a threshold, a new
+queue is added. Puts are distributed amongst the queues.
