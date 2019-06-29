@@ -19,11 +19,16 @@
 package org.apache.curator.framework.recipes.atomic;
 
 /**
+ * 从（分布式）原子对象返回一个的值的抽象；
+ *
  * Abstracts a value returned from one of the Atomics
  */
 public interface AtomicValue<T>
 {
     /**
+     * 本次更新操作是否成功；
+     * 该值必须检查；如果方法返回ture，表示对应的操作成功；如果返回false，表示对应的操作失败，并且原子对象没有被更新；
+     *
      * <b>MUST be checked.</b> Returns true if the operation succeeded. If false is returned,
      * the operation failed and the atomic was not updated.
      *
@@ -32,6 +37,8 @@ public interface AtomicValue<T>
     public boolean      succeeded();
 
     /**
+     * 当操作成功时，返回该原子对象的前一个值。
+     *
      * Returns the value of the counter prior to the operation
      *
      * @return pre-operation value
@@ -39,6 +46,8 @@ public interface AtomicValue<T>
     public T            preValue();
 
     /**
+     * 当操作成功时，返回操作之后的最新值；
+     *
      * Returns the value of the counter after to the operation
      *
      * @return post-operation value

@@ -98,18 +98,22 @@ public class DistributedAtomicValue
      */
     public void forceSet(byte[] newValue) throws Exception
     {
+        // 首先假设了节点存在，直接进行一次赋值操作
         try
         {
             client.setData().forPath(path, newValue);
         }
         catch ( KeeperException.NoNodeException dummy )
         {
+            // 检测到节点不存在，再进行一次尝试。这里无法确定其父节点是否存在，因此必须创建必要的父节点。
             try
             {
                 client.create().creatingParentContainersIfNeeded().forPath(path, newValue);
             }
             catch ( KeeperException.NodeExistsException dummy2 )
             {
+                // 检测到节点存在，创建节点失败，这里假设节点存在，回到了try块儿那里；
+                // 讲道理，这里也可能失败的，分布式和多线程很像，先检查后执行是可能失败的，当前的状态在执行下一步操作时可能是过期的。
                 client.setData().forPath(path, newValue);
             }
         }
