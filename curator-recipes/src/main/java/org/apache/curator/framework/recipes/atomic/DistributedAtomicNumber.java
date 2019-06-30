@@ -41,6 +41,7 @@ public interface DistributedAtomicNumber<T>
     /**
      * 当且仅当原子对象的当前值等于给定的期望值的时候，进行一次更新操作；
 	 * 记得检查{@link AtomicValue#succeeded()}以判断操作是否成功。
+     * （CAS本身是一次操作，失败是否重试是另一回事）
      *
      * Atomically sets the value to the given updated value
      * if the current value {@code ==} the expected value.
@@ -90,6 +91,9 @@ public interface DistributedAtomicNumber<T>
     public void forceSet(T newValue) throws Exception;
 
     /**
+     * 对当前值加1，并返回新值的信息。
+     * 记得始终要检查{@link AtomicValue#succeeded()}以判断操作是否成功。
+     *
      * Add 1 to the current value and return the new value information. Remember to always
      * check {@link AtomicValue#succeeded()}.
      *
@@ -99,6 +103,9 @@ public interface DistributedAtomicNumber<T>
     public AtomicValue<T> increment() throws Exception;
 
     /**
+     * 对当前值减1，并返回新值的信息。
+     * 记得始终要检查{@link AtomicValue#succeeded()}以判断操作是否成功。
+     *
      * Subtract 1 from the current value and return the new value information. Remember to always
      * check {@link AtomicValue#succeeded()}.
      *
@@ -108,6 +115,9 @@ public interface DistributedAtomicNumber<T>
     public AtomicValue<T> decrement() throws Exception;
 
     /**
+     * 对当前值加上指定增量，并返回新值的信息。
+     * 记得始终要检查{@link AtomicValue#succeeded()}以判断操作是否成功。
+     *
      * Add delta to the current value and return the new value information. Remember to always
      * check {@link AtomicValue#succeeded()}.
      *
@@ -118,6 +128,9 @@ public interface DistributedAtomicNumber<T>
     public AtomicValue<T> add(T delta) throws Exception;
 
     /**
+     * 对当前值减去指定增量，并返回新值的信息。
+     * 记得始终要检查{@link AtomicValue#succeeded()}以判断操作是否成功。
+     *
      * Subtract delta from the current value and return the new value information. Remember to always
      * check {@link AtomicValue#succeeded()}.
      *

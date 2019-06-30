@@ -55,6 +55,8 @@ public interface AtomicValue<T>
     public T            postValue();
 
     /**
+     * 返回原子对象操作的debug信息（用于分析）。
+     *
      * Returns debugging stats about the operation
      *
      * @return stats

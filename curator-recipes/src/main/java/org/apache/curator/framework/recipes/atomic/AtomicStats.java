@@ -18,8 +18,6 @@
  */
 package org.apache.curator.framework.recipes.atomic;
 
-import org.apache.curator.framework.CuratorFramework;
-
 /**
  * 用于debug追踪操作的状态/信息；
  *

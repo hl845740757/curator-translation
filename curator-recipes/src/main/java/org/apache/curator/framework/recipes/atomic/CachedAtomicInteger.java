@@ -21,6 +21,7 @@ package org.apache.curator.framework.recipes.atomic;
 /**
  * (预分配)支持缓存的原子变量；
  * 它使用一个{@link DistributedAtomicNumber}，并且按块的方式分配(申请)值以获得更好的性能。
+ * （其实自己实现更好，使用这个类其实挺麻烦的）
  *
  * Uses an {@link DistributedAtomicNumber} and allocates values in chunks for better performance
  */
@@ -44,7 +45,7 @@ public class CachedAtomicInteger
 
     /**
      * @param number the number to use
-     * @param cacheFactor the number of values to allocate at a time
+     * @param cacheFactor the number of values to allocate at a time 缓存因子，缓存大小
      */
     public CachedAtomicInteger(DistributedAtomicInteger number, int cacheFactor)
     {
@@ -53,6 +54,8 @@ public class CachedAtomicInteger
     }
 
     /**
+     * 返回下一个值（当前值+1）。如果需要一个新的数字段，将会自动从{@link #number}中申请。
+     *
      * Returns the next value (incrementing by 1). If a new chunk of numbers is needed, it is
      * requested from the number
      *

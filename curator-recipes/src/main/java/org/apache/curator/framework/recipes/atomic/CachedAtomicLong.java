@@ -57,6 +57,7 @@ public class CachedAtomicLong
 
     /**
      * @see CachedAtomicInteger#next()
+     * 返回下一个值（当前值+1）。如果需要一个新的数字段，将会自动从{@link #number}中申请。
      *
      * Returns the next value (incrementing by 1). If a new chunk of numbers is needed, it is
      * requested from the number
