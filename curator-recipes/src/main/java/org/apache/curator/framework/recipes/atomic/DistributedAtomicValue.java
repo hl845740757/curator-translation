@@ -372,7 +372,9 @@ public class DistributedAtomicValue
                      }
                      else
                      {
-                         // 原子操作失败，判断是否可以继续重试 （在互斥锁的模式下，存在这种情况吗？）
+                         // 原子操作失败，判断是否可以继续重试
+                         // 在获得互斥锁的情况下，为什么会失败呢？
+                         // 因为存在锁膨胀过程，我获得了互斥锁，只能互斥那些也处于互斥锁模式的客户端，并不能阻止其它客户端使用乐观锁更新数据！！！因此可能失败
                          if ( !promotedToLock.getRetryPolicy().allowRetry(retryCount++, System.currentTimeMillis() - startMs, RetryLoop.getDefaultRetrySleeper()) )
                          {
                              // 不允许重试，操作结束（失败）
