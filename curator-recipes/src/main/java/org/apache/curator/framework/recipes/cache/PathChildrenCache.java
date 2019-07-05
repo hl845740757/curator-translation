@@ -56,6 +56,19 @@ import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
+ * 一个尝试将指定zk路径下的所有子节点数据保存下来的实用本地缓存。
+ * 该类将会watch指定的zk路径，响应子节点的增删改事件，并拉取所有的数据等。
+ * 你可以注册一个{@link PathChildrenCacheListener}，当产生改变的时候，listener将会得到通知。
+ *
+ * <b>非常重要</b>
+ * 该类不能保持事务同步！该类的使用者必须为 假正(FP) 和假负(FN)作出准备。
+ * 此外，在更新数据时始终使用版本号，避免覆盖其它进程做出的更改。
+ *
+ * 注意我在{@link PathChildrenCacheEvent}中提到的安全性问题，不要在处理事件的时候使用{@link #currentData}。
+ *
+ * (假正，假负)
+ * - https://blog.csdn.net/xbinworld/article/details/50631342
+ *
  * <p>A utility that attempts to keep all data from all children of a ZK path locally cached. This class
  * will watch the ZK path, respond to update/create/delete events, pull down the data, etc. You can
  * register a listener that will get notified when changes occur.</p>
@@ -71,6 +84,7 @@ public class PathChildrenCache implements Closeable
     private final CuratorFramework client;
     private final String path;
     private final CloseableExecutorService executorService;
+    /** 是否缓存节点数据，默认缓存 */
     private final boolean cacheData;
     private final boolean dataIsCompressed;
     private final ListenerContainer<PathChildrenCacheListener> listeners = new ListenerContainer<PathChildrenCacheListener>();
