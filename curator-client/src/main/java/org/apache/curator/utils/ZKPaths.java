@@ -112,6 +112,8 @@ public class ZKPaths
     }
 
     /**
+     * 给定一个完整路径，返回节点的名字
+     *
      * Given a full path, return the node name. i.e. "/one/two/three" will return "three"
      *
      * @param path the path
@@ -155,6 +157,8 @@ public class ZKPaths
     }
 
     /**
+     * 给定一个路径，将其拆分它的父节点路径 和 自身节点的名字
+     *
      * Given a full path, return the node name and its path. i.e. "/one/two/three" will return {"/one/two", "three"}
      *
      * @param path the path
