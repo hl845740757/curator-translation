@@ -21,7 +21,7 @@ package org.apache.curator.framework.recipes.cache;
 import org.apache.curator.framework.CuratorFramework;
 
 /**
- * {@link PathChildrenCache}事件的监听器，当{@link PathChildrenCache}的状态发生改变时，监听器将会收到通知。
+ * {@link PathChildrenCache}上的事件监听器，当{@link PathChildrenCache}的状态发生改变时，监听器将会收到通知。
  *
  * Listener for PathChildrenCache changes
  */

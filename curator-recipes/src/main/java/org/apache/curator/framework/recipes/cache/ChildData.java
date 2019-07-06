@@ -36,7 +36,7 @@ public class ChildData implements Comparable<ChildData>
      */
     private final Stat stat;
     /**
-     * 节点对应的数据，不为null
+     * 节点对应的数据，在拉取到数据之前为null
      */
     private final byte[] data;
 

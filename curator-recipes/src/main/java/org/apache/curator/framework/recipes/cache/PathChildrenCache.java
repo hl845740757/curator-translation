@@ -64,9 +64,9 @@ import java.util.concurrent.atomic.AtomicReference;
  * 该类不能保持事务同步！该类的使用者必须为 假正(FP) 和假负(FN)作出准备。
  * 此外，在更新数据时始终使用版本号，避免覆盖其它进程做出的更改。
  *
- * 注意我在{@link PathChildrenCacheEvent}中提到的安全性问题，不要在处理事件的时候使用{@link #currentData}。
+ * 注意我在{@link PathChildrenCacheEvent}中提到的安全性问题，不要在处理事件的时候使用{@link PathChildrenCache}中的数据。
  *
- * (假正，假负)
+ * (假正，假负介绍)
  * - https://blog.csdn.net/xbinworld/article/details/50631342
  *
  * <p>A utility that attempts to keep all data from all children of a ZK path locally cached. This class
@@ -82,12 +82,32 @@ public class PathChildrenCache implements Closeable
 {
     private final Logger log = LoggerFactory.getLogger(getClass());
     private final CuratorFramework client;
+    /** 缓存节点路径 */
     private final String path;
+    /**
+     * 该缓存所有操作的执行线程。负责拉取{@link #path}下的数据，并处理事件。
+     */
     private final CloseableExecutorService executorService;
-    /** 是否缓存节点数据，默认缓存 */
+    /**
+     * 是否缓存节点数据，默认缓存。
+     * 一般来说我们使用Cache就是为了缓存数据的。
+     */
     private final boolean cacheData;
+    /** 数据是否是进行了压缩 */
     private final boolean dataIsCompressed;
+    /**
+     * 该缓存上的所有监听器，需要在调用{@link #start()}之前注册监听器。
+     * why?
+     * 1. 如果你基于{@link #currentData}决定是否进行监听，当你注册监听器的时候，你的检查结果可能是无效的！（无法控制main-thread更新data）
+     * 2. 在启动后进行监听，可能无法获得完整的数据和事件。
+     */
     private final ListenerContainer<PathChildrenCacheListener> listeners = new ListenerContainer<PathChildrenCacheListener>();
+    /**
+     * 节点下数据的本地缓存。
+     * 重要的事情说三遍：该数据由 main-EventThread进行更新！该数据由 main-EventThread进行更新！该数据由 main-EventThread进行更新！
+     * 其它线程如果仅仅是偶尔需要以下当前的最新数据，那么可以使用{@link #getCurrentData()}。
+     * 如果要处理事件，那么最好不要使用{@link #getCurrentData()}。
+     */
     private final ConcurrentMap<String, ChildData> currentData = Maps.newConcurrentMap();
     private final AtomicReference<Map<String, ChildData>> initialSet = new AtomicReference<Map<String, ChildData>>();
     private final Set<Operation> operationsQuantizer = Sets.newSetFromMap(Maps.<Operation, Boolean>newConcurrentMap());
@@ -559,10 +579,13 @@ public class PathChildrenCache implements Closeable
 
         if ( USE_EXISTS && !cacheData )
         {
+            // 如果使用exist 并且不缓存数据，则走到这里，一般不会走到这里
             client.checkExists().usingWatcher(dataWatcher).inBackground(callback).forPath(fullPath);
         }
         else
         {
+
+
             // always use getData() instead of exists() to avoid leaving unneeded watchers which is a type of resource leak
             if ( dataIsCompressed && cacheData )
             {
@@ -698,6 +721,15 @@ public class PathChildrenCache implements Closeable
         maybeOfferInitializedEvent(initialSet.get());
     }
 
+    /**
+     * 应用新数据，将拉取到的新数据保存到缓存中。
+     * 注意：由于拉取数据是后台执行，由main-EventThread执行回调。
+     * 数据的更新是 main-EventThread立即执行的，而事件处理被提交给了{@link #executorService}。
+     * @param fullPath 子节点的全路径
+     * @param resultCode 后台执行时的结果码，表示操作是否成功
+     * @param stat 节点的最新状态
+     * @param bytes 节点的最新数据
+     */
     private void applyNewData(String fullPath, int resultCode, Stat stat, byte[] bytes)
     {
         if ( resultCode == KeeperException.Code.OK.intValue() ) // otherwise - node must have dropped or something - we should be getting another event
