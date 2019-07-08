@@ -21,6 +21,8 @@ package org.apache.curator.framework;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
+ * 确保容器路径存在的类，当容器节点不存在的时候，创建容器节点（通过创建一个子节点"foo"来创建容器）。
+ *
  * Similar to {@link org.apache.curator.utils.EnsurePath} but creates containers.
  *
  */
@@ -28,6 +30,14 @@ public class EnsureContainers
 {
     private final CuratorFramework client;
     private final String path;
+
+    /**
+     * 是否需要执行。
+     * Q: 为何需要原子变量呢？
+     * A: synchronize + Atomic/volatile 实现并发下的高效读，提高查询效率。
+     *    高效读：只读操作不需要获得锁，不需要互斥执行。而写操作，需要互斥执行，需要获得锁。
+     *    synchronize用于阻塞其它线程，Atomic用于保证只执行一次。
+     */
     private final AtomicBoolean ensureNeeded = new AtomicBoolean(true);
 
     /**
@@ -41,6 +51,8 @@ public class EnsureContainers
     }
 
     /**
+     * 第一次调用该方法的时候，如果需要的话，该路径上的所有节点将会被创建为容器。
+     *
      * The first time this method is called, all nodes in the
      * path will be created as containers if needed
      *
@@ -48,14 +60,22 @@ public class EnsureContainers
      */
     public void ensure() throws Exception
     {
+        // 如果检测到了，已经执行了保证操作，则直接返回，无需竞争锁
         if ( ensureNeeded.get() )
         {
+            // 需要执行一次保证操作
             internalEnsure();
         }
     }
 
+    /**
+     * Q: 该方法为何需要加锁呢？
+     * A: 该方法需要互斥执行，此外线程需要等待前面的线程创建节点成功之后才能返回！
+     * @throws Exception zookeeper errors
+     */
     private synchronized void internalEnsure() throws Exception
     {
+        // 通过原子变量保证只执行一次，其实就是个 double check
         if ( ensureNeeded.compareAndSet(true, false) )
         {
             client.createContainers(path);

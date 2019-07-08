@@ -29,7 +29,11 @@ public interface PathChildrenCacheListener
 {
     /**
      * 当事件产生时该方法将会被调用。
+     * 调用该方法的线程是{@code PathChildrenCache#executorService}调用的。
      * 再次注意：这里是异步调用。事件可能是旧事件，而{@link PathChildrenCache}中的数据是新数据。
+     *
+     * Q:为什么该方法由参数？而{@link NodeCacheListener#nodeChanged()}没有参数？
+     * A:请注意查看{@link PathChildrenCacheEvent}的类注释。
      *
      * Called when a change has occurred
      *

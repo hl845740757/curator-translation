@@ -64,7 +64,9 @@ import java.util.concurrent.atomic.AtomicReference;
  * 该类不能保持事务同步！该类的使用者必须为 假正(FP) 和假负(FN)作出准备。
  * 此外，在更新数据时始终使用版本号，避免覆盖其它进程做出的更改。
  *
- * 注意我在{@link PathChildrenCacheEvent}中提到的安全性问题，不要在处理事件的时候使用{@link PathChildrenCache}中的数据。
+ * 注意:
+ * 1. 不要在处理事件的时候使用{@link PathChildrenCache}中的数据，详细信息查看{@link PathChildrenCacheEvent}的类注释。
+ * 2. 在启动缓存之前注册监听器。
  *
  * (假正，假负介绍)
  * - https://blog.csdn.net/xbinworld/article/details/50631342
@@ -81,6 +83,7 @@ import java.util.concurrent.atomic.AtomicReference;
 public class PathChildrenCache implements Closeable
 {
     private final Logger log = LoggerFactory.getLogger(getClass());
+    /** curator 客户端 */
     private final CuratorFramework client;
     /** 缓存节点路径 */
     private final String path;
@@ -98,8 +101,7 @@ public class PathChildrenCache implements Closeable
     /**
      * 该缓存上的所有监听器，需要在调用{@link #start()}之前注册监听器。
      * why?
-     * 1. 如果你基于{@link #currentData}决定是否进行监听，当你注册监听器的时候，你的检查结果可能是无效的！（无法控制main-thread更新data）
-     * 2. 在启动后进行监听，可能无法获得完整的数据和事件。
+     * 如果你基于{@link #currentData}的检查结果决定是否进行监听，当你注册监听器的时候，你的检查结果可能是无效的！（无法控制main-thread更新data）
      */
     private final ListenerContainer<PathChildrenCacheListener> listeners = new ListenerContainer<PathChildrenCacheListener>();
     /**
@@ -109,15 +111,31 @@ public class PathChildrenCache implements Closeable
      * 如果要处理事件，那么最好不要使用{@link #getCurrentData()}。
      */
     private final ConcurrentMap<String, ChildData> currentData = Maps.newConcurrentMap();
+    /** 节点的初始化数据 */
     private final AtomicReference<Map<String, ChildData>> initialSet = new AtomicReference<Map<String, ChildData>>();
+    /**
+     * 待执行的操作结果。
+     * Q: 为啥不用ConcurrentMap的Set视图，而不是{@link java.util.concurrent.ConcurrentLinkedQueue}呢？
+     * A: 当操作类型和路径相同的时候，这些操作将是等价的。比如：拉取同一个节点的数据， 拉取同一个节点的所有子节点。
+     *
+     * Q: 那会不会产生某些奇怪的问题呢？
+     * A: TODO
+     */
     private final Set<Operation> operationsQuantizer = Sets.newSetFromMap(Maps.<Operation, Boolean>newConcurrentMap());
+    /**
+     * 缓存的生命周期标识。
+     */
     private final AtomicReference<State> state = new AtomicReference<State>(State.LATENT);
+
     private final EnsureContainers ensureContainers;
 
     private enum State
     {
+        /** 刚创建，还未启动的状态 */
         LATENT,
+        /** 已启动状态 */
         STARTED,
+        /** 已关闭状态 */
         CLOSED
     }
 

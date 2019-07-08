@@ -25,12 +25,13 @@ import java.util.List;
 /**
  * 缓存事件。
  *
- * Q:为什么事件对象中没有{@link PathChildrenCache} 呢，或者说事件对象为什么有{@link ChildData}呢？
+ * Q:为什么事件对象中没有{@link PathChildrenCache} 呢？
  *
  * A:{@link PathChildrenCache}中的数据改变是由 main-EventThread执行的，是最新的数据。
- * 更新数据之后，会将事件处理操作提交给事件处理线程（避免阻塞main-EventThread线程）。
- * 而事件处理者是另一个线程，无法保证事件与{@link PathChildrenCache}中数据的一致性（异步过程）。
- * 导致：事件可能是旧的事件，而{@link PathChildrenCache}中却是最新的数据，因此事件处理器一定不能从{@link PathChildrenCache}获取数据。
+ * 更新数据之后，会将事件处理操作提交给事件处理线程（{@code PathChildrenCache}中的executorService，是为了避免阻塞main-EventThread线程）。
+ * 由于围护数据的线程与处理事件的线程不是同一个线程，无法保证事件与{@link PathChildrenCache}中数据的一致性（异步过程）。
+ *
+ * 因此在处理事件时，事件可能是旧的事件，而{@link PathChildrenCache}中却是最新的数据，因此事件处理器一定不能从{@link PathChildrenCache}获取数据。
  * 事件处理器线程只能通过事件中的数据一步一步更新自己的本地缓存，以最终和main-EventThread线程中的Cache达成一致(最终一致性)。
  *
  * 举个栗子：事件处理器正在处理一个{@link Type#CHILD_ADDED}事件，如果从{@link PathChildrenCache}中获取节点数据，则可能出现异常，
