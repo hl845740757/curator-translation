@@ -78,7 +78,17 @@ public class EnsureContainers
         // 通过原子变量保证只执行一次，其实就是个 double check
         if ( ensureNeeded.compareAndSet(true, false) )
         {
+            // 这个好像有bug啊
+            // eg: 如果线程在这里突然被操作系统挂起了，其它线程在ensure那里检测到标记为false，则直接返回了。
+            // 此时，其它线程以为已经执行了 createContainers操作，实际还没有！！！
+            // ensureNeeded的更新应该放在 createContainers操作 之后才能保证看见标记为false的时候，节点一定已经创建了！
             client.createContainers(path);
         }
+
+        // wjybxx: 我决定应该是这样的
+//        if (ensureNeeded.get()){
+//            client.createContainers(path);
+//            ensureNeeded.set(false);
+//        }
     }
 }
