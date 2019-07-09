@@ -61,8 +61,8 @@ import java.util.concurrent.atomic.AtomicReference;
  * 你可以注册一个{@link PathChildrenCacheListener}，当产生改变的时候，listener将会得到通知。
  *
  * <b>非常重要</b>
- * 该类不能保持事务同步！该类的使用者必须为 假正(FP) 和假负(FN)作出准备。
- * 此外，在更新数据时始终使用版本号，避免覆盖其它进程做出的更改。
+ * 该类不能保持事务同步！该类的使用者必须为 假正(FP) 和假负(FN)作出准备。此外，在更新数据时始终使用版本号，避免覆盖其它进程做出的更改。
+ * (这段其实我也不是很明白~)
  *
  * 注意:
  * 1. 不要在处理事件的时候使用{@link PathChildrenCache}中的数据，详细信息查看{@link PathChildrenCacheEvent}的类注释。
@@ -85,15 +85,22 @@ public class PathChildrenCache implements Closeable
     private final Logger log = LoggerFactory.getLogger(getClass());
     /** curator 客户端 */
     private final CuratorFramework client;
-    /** 缓存节点路径 */
+    /**
+     * 要监测的路径(path to watch)
+     */
     private final String path;
     /**
-     * 该缓存所有操作的执行线程。负责拉取{@link #path}下的数据，并处理事件。
+     * 该缓存所有操作的执行线程。负责拉取{@link #path}下的数据 和 处理事件。
+     * {@link PathChildrenCache} 和 {@link TreeCache}都使用了线程池，
+     * 目的是相同的，一个节点下的缓存事件可能很多，避免阻塞 main-EventThread(数据更新 和 事件分发)。
+     * 它包装的{@link ExecutorService}必须是单线程的线程池，否则可能导致数据不一致的情况，它需要保证操作和事件的顺序！
+     * (共享线程池/指定线程池时一定要注意，必须是单线程的线程池。)
      */
     private final CloseableExecutorService executorService;
     /**
-     * 是否缓存节点数据，默认缓存。
-     * 一般来说我们使用Cache就是为了缓存数据的。
+     * 是否缓存节点数据.
+     * - 默认缓存。
+     * - why? 一般来说我们使用Cache就是为了缓存数据的。
      */
     private final boolean cacheData;
     /** 数据是否是进行了压缩 */
@@ -139,19 +146,29 @@ public class PathChildrenCache implements Closeable
         CLOSED
     }
 
+    /**
+     * 空的childData，占位符
+     */
     private static final ChildData NULL_CHILD_DATA = new ChildData("/", null, null);
 
+    /**
+     * 是否使用 {@link CuratorFramework#checkExists()}进行监听，默认false。
+     * 因为使用{@link CuratorFramework#checkExists()}无法获取节点数据，只有不缓存节点数据时才有意义。
+     */
     private static final boolean USE_EXISTS = Boolean.getBoolean("curator-path-children-cache-use-exists");
 
+    /** 观察子节点增删事件的watcher */
     private volatile Watcher childrenWatcher = new Watcher()
     {
         @Override
         public void process(WatchedEvent event)
         {
+            // 有子节点增删，拉取最新的子节点数据
             offerOperation(new RefreshOperation(PathChildrenCache.this, RefreshMode.STANDARD));
         }
     };
 
+    /** 获取节点数据时，使用的watcher，用于监听节点删除和更新事件 */
     private volatile Watcher dataWatcher = new Watcher()
     {
         @Override
@@ -161,10 +178,12 @@ public class PathChildrenCache implements Closeable
             {
                 if ( event.getType() == Event.EventType.NodeDeleted )
                 {
+                    // 监测到节点删除，删除本地缓存数据，并派发一个节点删除事件
                     remove(event.getPath());
                 }
                 else if ( event.getType() == Event.EventType.NodeDataChanged )
                 {
+                    // 节点数据发生了改变，压入一个拉取数据操作(命令)，避免阻塞main-EventThread
                     offerOperation(new GetDataOperation(PathChildrenCache.this, event.getPath()));
                 }
             }
@@ -176,20 +195,30 @@ public class PathChildrenCache implements Closeable
         }
     };
 
+    /** 用于测试rebuild的exchanger，通过exchanger唤醒测试线程 */
     @VisibleForTesting
     volatile Exchanger<Object> rebuildTestExchanger;
 
+    /** 客户端连接事件监听器 */
     private volatile ConnectionStateListener connectionStateListener = new ConnectionStateListener()
     {
         @Override
         public void stateChanged(CuratorFramework client, ConnectionState newState)
         {
+            // 处理连接状态
             handleStateChange(newState);
         }
     };
+
+    /**
+     * 默认的线程工厂，如果构造方法未指定处理事件的线程池，那么将创建一个单线程的线程池，并使用该工厂对象。
+     * 建议在使用{@link PathChildrenCache}的时候，指定线程池（必须单线程的线程池），可以复用线程池，减少线程数。
+     * 因为一般来说，该线程池其实没有太多活。
+     */
     private static final ThreadFactory defaultThreadFactory = ThreadUtils.newThreadFactory("PathChildrenCache");
 
     /**
+     * 废弃方法，不在注释。
      * @param client the client
      * @param path   path to watch
      * @param mode   caching mode
@@ -203,6 +232,7 @@ public class PathChildrenCache implements Closeable
     }
 
     /**
+     * 废弃方法，不在注释。
      * @param client        the client
      * @param path          path to watch
      * @param mode          caching mode
@@ -219,54 +249,79 @@ public class PathChildrenCache implements Closeable
     /**
      * @param client    the client
      * @param path      path to watch
+     *                  要监测的路径(要观察的路径)
      * @param cacheData if true, node contents are cached in addition to the stat
+     *                  是否缓存数据，如果缓存数据，除了stat之后，节点的内容将会被缓存。
      */
     public PathChildrenCache(CuratorFramework client, String path, boolean cacheData)
     {
+        // 注意：这里新创建了单线程的线程池。使用的是默认的线程工厂。
         this(client, path, cacheData, false, new CloseableExecutorService(Executors.newSingleThreadExecutor(defaultThreadFactory), true));
     }
 
     /**
      * @param client        the client
      * @param path          path to watch
+     *                      要监测的路径(要观察的路径)
      * @param cacheData     if true, node contents are cached in addition to the stat
+     *                      是否缓存数据，如果缓存数据，除了stat之后，节点的内容将会被缓存。
      * @param threadFactory factory to use when creating internal threads
+     *                      创建内部线程的工厂。创建的线程用于处理事件和拉取数据。
      */
     public PathChildrenCache(CuratorFramework client, String path, boolean cacheData, ThreadFactory threadFactory)
     {
+        // 注意：这里新创建了单线程的线程池。
         this(client, path, cacheData, false, new CloseableExecutorService(Executors.newSingleThreadExecutor(threadFactory), true));
     }
 
     /**
      * @param client           the client
      * @param path             path to watch
+     *                         要监测的路径(要观察的路径)
      * @param cacheData        if true, node contents are cached in addition to the stat
+     *                         是否缓存数据，如果缓存数据，除了stat之后，节点的内容将会被缓存。
      * @param dataIsCompressed if true, data in the path is compressed
+     *                         节点数据是否使用压缩格式，如果为true，表示节点数据是经过压缩的
      * @param threadFactory    factory to use when creating internal threads
+     *                         创建内部线程的工厂。创建的线程用于处理事件和拉取数据。
      */
     public PathChildrenCache(CuratorFramework client, String path, boolean cacheData, boolean dataIsCompressed, ThreadFactory threadFactory)
     {
+        // 注意：这里新创建了单线程的线程池。
         this(client, path, cacheData, dataIsCompressed, new CloseableExecutorService(Executors.newSingleThreadExecutor(threadFactory), true));
     }
 
     /**
      * @param client           the client
      * @param path             path to watch
+     *                         要监测的路径(要观察的路径)
      * @param cacheData        if true, node contents are cached in addition to the stat
+     *                         是否缓存数据，如果缓存数据，除了stat之后，节点的内容将会被缓存。
      * @param dataIsCompressed if true, data in the path is compressed
-     * @param executorService  ExecutorService to use for the PathChildrenCache's background thread. This service should be single threaded, otherwise the cache may see inconsistent results.
+     *                         节点数据是否使用压缩格式，如果为true，表示节点数据是经过压缩的
+     * @param executorService  ExecutorService to use for the PathChildrenCache's background thread.
+     *                         This service should be single threaded, otherwise the cache may see inconsistent results.
+     *                         用于PathChildrenCache的后台线程，该{@link ExecutorService}必须是单线程的，否则可能出现不一致的结果。
+     *                         (需要保证操作和事件的顺序)
      */
     public PathChildrenCache(CuratorFramework client, String path, boolean cacheData, boolean dataIsCompressed, final ExecutorService executorService)
     {
+        // 这里没有创建线程池，且线程池不会随着Cache的关闭而关闭
         this(client, path, cacheData, dataIsCompressed, new CloseableExecutorService(executorService));
     }
 
     /**
      * @param client           the client
      * @param path             path to watch
+     *                         要监测的路径(要观察的路径)
      * @param cacheData        if true, node contents are cached in addition to the stat
+     *                         是否缓存数据，如果缓存数据，除了stat之后，节点的内容将会被缓存。
      * @param dataIsCompressed if true, data in the path is compressed
-     * @param executorService  Closeable ExecutorService to use for the PathChildrenCache's background thread. This service should be single threaded, otherwise the cache may see inconsistent results.
+     *                         节点数据是否使用压缩格式，如果为true，表示节点数据是经过压缩的
+     * @param executorService  Closeable ExecutorService to use for the PathChildrenCache's background thread.
+     *                         This service should be single threaded, otherwise the cache may see inconsistent results.
+     *                         用于PathChildrenCache的后台线程，被包装的{@link ExecutorService}必须是单线程的，否则可能出现不一致的结果。
+     *                         (需要保证操作和事件的顺序)
      */
     public PathChildrenCache(CuratorFramework client, String path, boolean cacheData, boolean dataIsCompressed, final CloseableExecutorService executorService)
     {
@@ -279,6 +334,8 @@ public class PathChildrenCache implements Closeable
     }
 
     /**
+     * 使用默认的启动模式启动缓存。
+     * 缓存并不是自动启动的，你必须调用该start方法启动缓存。
      * Start the cache. The cache is not started automatically. You must call this method.
      *
      * @throws Exception errors
@@ -289,6 +346,7 @@ public class PathChildrenCache implements Closeable
     }
 
     /**
+     * 废弃方法，不在注释。
      * Same as {@link #start()} but gives the option of doing an initial build
      *
      * @param buildInitial if true, {@link #rebuild()} will be called before this method
@@ -304,17 +362,29 @@ public class PathChildrenCache implements Closeable
     }
 
     /**
+     * {@link PathChildrenCache#start(StartMode)}启动缓存的方式。
+     * (填充缓存的方式)
+     *
      * Method of priming cache on {@link PathChildrenCache#start(StartMode)}
      */
     public enum StartMode
     {
         /**
+         * 普通模式。
+         * 缓存将在后台装填好初始化值。当前存在的节点和新增的节点，都会发布事件。
+         * eg：启动时，节点下已有子节点存在，初始拉取这些子节点时，会抛出事件。
+         *
          * The cache will be primed (in the background) with initial values.
          * Events for existing and new nodes will be posted.
          */
         NORMAL,
 
         /**
+         * 构建初始缓存模式。
+         * 缓存将会在启动时同步填充初始缓存值。在{@link PathChildrenCache#start(StartMode)}返回之前，
+         * 将会调用{@link PathChildrenCache#rebuild()}以获得该节点的初始视图。
+         * （初始节点的拉取不会抛出事件）
+         *
          * The cache will be primed (in the foreground) with initial values.
          * {@link PathChildrenCache#rebuild()} will be called before
          * the {@link PathChildrenCache#start(StartMode)} method returns
@@ -323,6 +393,10 @@ public class PathChildrenCache implements Closeable
         BUILD_INITIAL_CACHE,
 
         /**
+         * 报告初始化完成事件模式。
+         * 缓存将在后台装填好初始化值，初始节点的拉取不会抛出事件，但是在初始缓存构建完成时会抛出一个
+         * {@link PathChildrenCacheEvent.Type#INITIALIZED}事件。
+         *
          * After cache is primed with initial values (in the background) a
          * {@link PathChildrenCacheEvent.Type#INITIALIZED} will be posted.
          */
@@ -366,6 +440,10 @@ public class PathChildrenCache implements Closeable
     }
 
     /**
+     * 注意：这是一个阻塞的方法。
+     * 通过查询所有需要的数据完全重建内部缓存，而不生成任何事件发送给事件监听器(listeners)。
+     * （刚方法不要随便调用，否则可能导致事件处理器得到的结果与缓存不一致）
+     *
      * NOTE: this is a BLOCKING method. Completely rebuild the internal cache by querying
      * for all needed data WITHOUT generating any events to send to listeners.
      *
@@ -379,10 +457,13 @@ public class PathChildrenCache implements Closeable
 
         clear();
 
+        // 获取当前节点下的子节点们
         List<String> children = client.getChildren().forPath(path);
         for ( String child : children )
         {
+            // 构建完整路径
             String fullPath = ZKPaths.makePath(path, child);
+            // 内部构建某一个子节点
             internalRebuildNode(fullPath);
 
             if ( rebuildTestExchanger != null )
@@ -391,6 +472,7 @@ public class PathChildrenCache implements Closeable
             }
         }
 
+        // 压入一个refresh操作，这是有必要的，因为在重建缓存期间可能发生任何类型的更新。
         // this is necessary so that any updates that occurred while rebuilding are taken
         offerOperation(new RefreshOperation(this, RefreshMode.FORCE_GET_DATA_AND_STAT));
     }
@@ -603,7 +685,6 @@ public class PathChildrenCache implements Closeable
         else
         {
 
-
             // always use getData() instead of exists() to avoid leaving unneeded watchers which is a type of resource leak
             if ( dataIsCompressed && cacheData )
             {
@@ -631,12 +712,17 @@ public class PathChildrenCache implements Closeable
         ensureContainers.ensure();
     }
 
+    /**
+     * 删除本地缓的某个节点数据
+     * @param fullPath 删除的节点数据
+     */
     @VisibleForTesting
     protected void remove(String fullPath)
     {
         ChildData data = currentData.remove(fullPath);
         if ( data != null )
         {
+            // 如果节点在当前数据中，那么则触发节点删除事件
             offerOperation(new EventOperation(this, new PathChildrenCacheEvent(PathChildrenCacheEvent.Type.CHILD_REMOVED, data)));
         }
 
@@ -648,24 +734,34 @@ public class PathChildrenCache implements Closeable
         }
     }
 
+    /**
+     * 内部构建某一个子节点
+     * @param fullPath 子节点完整路径
+     * @throws Exception zookeeper errors
+     */
     private void internalRebuildNode(String fullPath) throws Exception
     {
         if ( cacheData )
         {
+            // 需要缓存数据，使用getData
             try
             {
                 Stat stat = new Stat();
+                // 拉取数据存入缓存，rebuild不抛出事件，因此不做缓存值与最新值的比较。
                 byte[] bytes = dataIsCompressed ? client.getData().decompressed().storingStatIn(stat).forPath(fullPath) : client.getData().storingStatIn(stat).forPath(fullPath);
                 currentData.put(fullPath, new ChildData(fullPath, stat, bytes));
             }
             catch ( KeeperException.NoNodeException ignore )
             {
+                // 即使调用方法前，节点存在。当发起拉取数据的时候，节点又可能是不存在的。
+                // 节点不存在时，删除该节点的数据。 rebuild方法不抛出事件，因此不做返回值检测
                 // node no longer exists - remove it
                 currentData.remove(fullPath);
             }
         }
         else
         {
+            // 不缓存数据，只缓存状态，使用checkExists，拉取最新的stat到缓存。（逻辑基本同上面）
             Stat stat = client.checkExists().forPath(fullPath);
             if ( stat != null )
             {
@@ -679,6 +775,10 @@ public class PathChildrenCache implements Closeable
         }
     }
 
+    /**
+     * 处理连接状态改变事件
+     * @param newState 当前状态
+     */
     private void handleStateChange(ConnectionState newState)
     {
         switch ( newState )
@@ -713,13 +813,20 @@ public class PathChildrenCache implements Closeable
         }
     }
 
+    /**
+     * 处理拉取的所有的children数据
+     * @param children 节点当前的最小子节点信息
+     * @param mode 拉取节点的模式
+     * @throws Exception zookeeper errors
+     */
     private void processChildren(List<String> children, RefreshMode mode) throws Exception
     {
+        // removedNodes 用于统计已删除的节点， = 缓存 - 最新节点信息
         Set<String> removedNodes = Sets.newHashSet(currentData.keySet());
         for ( String child : children ) {
             removedNodes.remove(ZKPaths.makePath(path, child));
         }
-
+        // 删除本地缓存
         for ( String fullPath : removedNodes )
         {
             remove(fullPath);
