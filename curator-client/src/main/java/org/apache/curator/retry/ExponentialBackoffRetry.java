@@ -68,6 +68,8 @@ public class ExponentialBackoffRetry extends SleepingRetry
     protected long getSleepTimeMs(int retryCount, long elapsedTimeMs)
     {
         // copied from Hadoop's RetryPolicies.java
+        // 这也有bug，两个int并不能安全的相乘得到long,会溢出。我测试过该代码（只计算，不sleep），确实会越界。
+        // 不过，可能等不到溢出，线程已经睡死了(sleep太久）。。
         long sleepMs = baseSleepTimeMs * Math.max(1, random.nextInt(1 << (retryCount + 1)));
         if ( sleepMs > maxSleepMs )
         {

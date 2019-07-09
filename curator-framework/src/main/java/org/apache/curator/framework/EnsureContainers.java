@@ -70,22 +70,22 @@ public class EnsureContainers
 
     /**
      * Q: 该方法为何需要加锁呢？
-     * A: 该方法需要互斥执行，此外线程需要等待前面的线程创建节点成功之后才能返回！
+     * A: 该方法需要互斥执行，后续线程需要等待前面的线程创建节点成功之后才能返回！
      * @throws Exception zookeeper errors
      */
     private synchronized void internalEnsure() throws Exception
     {
-        // 通过原子变量保证只执行一次，其实就是个 double check
+        // 想达到的目的：通过原子变量保证只执行一次。
         if ( ensureNeeded.compareAndSet(true, false) )
         {
-            // 这个好像有bug啊
+            // 这个好像有bug啊，这样的写法导致了锁是没有意义的，因为检测标记不需要获得锁。
             // eg: 如果线程在这里突然被操作系统挂起了，其它线程在ensure那里检测到标记为false，则直接返回了。
             // 此时，其它线程以为已经执行了 createContainers操作，实际还没有！！！
             // ensureNeeded的更新应该放在 createContainers操作 之后才能保证看见标记为false的时候，节点一定已经创建了！
             client.createContainers(path);
         }
 
-        // wjybxx: 我决定应该是这样的
+        // wjybxx: 我觉得应该是这样的 double check
 //        if (ensureNeeded.get()){
 //            client.createContainers(path);
 //            ensureNeeded.set(false);
