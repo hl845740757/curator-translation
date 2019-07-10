@@ -118,7 +118,10 @@ public class PathChildrenCache implements Closeable
      * 如果要处理事件，那么最好不要使用{@link #getCurrentData()}。
      */
     private final ConcurrentMap<String, ChildData> currentData = Maps.newConcurrentMap();
-    /** 节点的初始化数据 */
+    /**
+     * 节点的初始化数据。
+     * 在需要处理初始化完成事件时，{@link AtomicReference#get()}是不为null的。
+     */
     private final AtomicReference<Map<String, ChildData>> initialSet = new AtomicReference<Map<String, ChildData>>();
     /**
      * 待执行的操作结果。
@@ -134,6 +137,7 @@ public class PathChildrenCache implements Closeable
      */
     private final AtomicReference<State> state = new AtomicReference<State>(State.LATENT);
 
+    /** 确保容器节点存在的辅助类(这个类单线程使用没问题，多线程下似乎有bug) */
     private final EnsureContainers ensureContainers;
 
     private enum State
@@ -362,8 +366,7 @@ public class PathChildrenCache implements Closeable
     }
 
     /**
-     * {@link PathChildrenCache#start(StartMode)}启动缓存的方式。
-     * (填充缓存的方式)
+     * 启动缓存的方式(初始填充缓存的方式)。
      *
      * Method of priming cache on {@link PathChildrenCache#start(StartMode)}
      */
@@ -404,13 +407,15 @@ public class PathChildrenCache implements Closeable
     }
 
     /**
+     * 按照指定模式启动缓存，缓存并不会自动启动。你必须主动调用该方法启动缓存。
      * Start the cache. The cache is not started automatically. You must call this method.
      *
-     * @param mode Method for priming the cache
+     * @param mode Method for priming the cache 初始填充缓存的方式
      * @throws Exception errors
      */
     public void start(StartMode mode) throws Exception
     {
+        // 通过原子变量，保护下面的代码块，只允许启动一次。
         Preconditions.checkState(state.compareAndSet(State.LATENT, State.STARTED), "already started");
         mode = Preconditions.checkNotNull(mode, "mode cannot be null");
 
@@ -420,18 +425,22 @@ public class PathChildrenCache implements Closeable
         {
             case NORMAL:
             {
+                // 以普通方式启动缓存时，在后台拉取所有节点数据
                 offerOperation(new RefreshOperation(this, RefreshMode.STANDARD));
                 break;
             }
 
             case BUILD_INITIAL_CACHE:
             {
+                // 以构建初始缓存模式启动缓存，会以阻塞(同步的)的方式先拉取一次节点数据到缓存，然后后台再压入一个拉取数据操作。
+                // 好处是方便，可以同步的方式获取当前数据。缺点是会多拉取一次数据。（rebuild不会注册watcher）
                 rebuild();
                 break;
             }
 
             case POST_INITIALIZED_EVENT:
             {
+                // 以报告初始化完成事件模式启动缓存，在后台拉取所有节点数据，拉取完之后，会抛出一个init事件，可以获得初始化完成时的数据。
                 initialSet.set(Maps.<String, ChildData>newConcurrentMap());
                 offerOperation(new RefreshOperation(this, RefreshMode.POST_INITIALIZED));
                 break;
@@ -442,7 +451,10 @@ public class PathChildrenCache implements Closeable
     /**
      * 注意：这是一个阻塞的方法。
      * 通过查询所有需要的数据完全重建内部缓存，而不生成任何事件发送给事件监听器(listeners)。
-     * （刚方法不要随便调用，否则可能导致事件处理器得到的结果与缓存不一致）
+     * （刚方法在运行时不要随便调用，否则可能导致事件处理器得到的结果与缓存不一致。
+     *  eg: rebuild清除了缓存，又收到了节点删除事件{@link #remove(String)},
+     *      会导致无法抛出{@link PathChildrenCacheEvent.Type#CHILD_REMOVED}事件。
+     * ）
      *
      * NOTE: this is a BLOCKING method. Completely rebuild the internal cache by querying
      * for all needed data WITHOUT generating any events to send to listeners.
@@ -451,10 +463,13 @@ public class PathChildrenCache implements Closeable
      */
     public void rebuild() throws Exception
     {
+        // 确保executor还未关闭(不过rebuild也用不上executor啊)
         Preconditions.checkState(!executorService.isShutdown(), "cache has been closed");
 
+        // 确保路径存在(预构建)
         ensurePath();
 
+        // 清除本地缓存
         clear();
 
         // 获取当前节点下的子节点们
@@ -463,9 +478,10 @@ public class PathChildrenCache implements Closeable
         {
             // 构建完整路径
             String fullPath = ZKPaths.makePath(path, child);
-            // 内部构建某一个子节点
+            // 内部构建某一个子节点(选择拉取数据的方式)
             internalRebuildNode(fullPath);
 
+            // 唤醒测试组件
             if ( rebuildTestExchanger != null )
             {
                 rebuildTestExchanger.exchange(new Object());
@@ -473,11 +489,15 @@ public class PathChildrenCache implements Closeable
         }
 
         // 压入一个refresh操作，这是有必要的，因为在重建缓存期间可能发生任何类型的更新。
+        // 要保持本地缓存与远程的一致性，需要对远程节点进行监听，而rebuild本身是不监听节点的，
         // this is necessary so that any updates that occurred while rebuilding are taken
         offerOperation(new RefreshOperation(this, RefreshMode.FORCE_GET_DATA_AND_STAT));
     }
 
     /**
+     * 重建某个节点。
+     * 注意：该方法是一个阻塞方法。通过查询所有需要的数据重建给定的节点缓存，并且不会生成任何事件发送给监听者。
+     *
      * NOTE: this is a BLOCKING method. Rebuild the internal cache for the given node by querying
      * for all needed data WITHOUT generating any events to send to listeners.
      *
@@ -486,12 +506,17 @@ public class PathChildrenCache implements Closeable
      */
     public void rebuildNode(String fullPath) throws Exception
     {
+        // 检查是否是当前path下的节点
         Preconditions.checkArgument(ZKPaths.getPathAndNode(fullPath).getPath().equals(path), "Node is not part of this cache: " + fullPath);
+        // 检查executorService是否关闭
         Preconditions.checkState(!executorService.isShutdown(), "cache has been closed");
 
+        // 确保父节点存在
         ensurePath();
+        // 获取该节点数据
         internalRebuildNode(fullPath);
 
+        // 压入一个刷新操作，
         // this is necessary so that any updates that occurred while rebuilding are taken
         // have to rebuild entire tree in case this node got deleted in the interim
         offerOperation(new RefreshOperation(this, RefreshMode.FORCE_GET_DATA_AND_STAT));
@@ -604,6 +629,7 @@ public class PathChildrenCache implements Closeable
     }
 
     /**
+     * 清除缓存当前数据，开始新一轮的查询，并且不生成任何事件给监听者。
      * Clears the current data without beginning a new query and without generating any events
      * for listeners.
      */
@@ -612,13 +638,28 @@ public class PathChildrenCache implements Closeable
         currentData.clear();
     }
 
+    /** 缓存刷新模式 */
     enum RefreshMode
     {
+        /**
+         * 标准模式
+         */
         STANDARD,
+        /**
+         * 强制获取节点数据和状态
+         */
         FORCE_GET_DATA_AND_STAT,
+        /**
+         * 拉取完成之后，抛出一个初始化完成事件
+         */
         POST_INITIALIZED
     }
 
+    /**
+     * 刷新缓存
+     * @param mode 刷新缓存的模式
+     * @throws Exception zookeeper errors
+     */
     void refresh(final RefreshMode mode) throws Exception
     {
         ensurePath();
@@ -630,10 +671,12 @@ public class PathChildrenCache implements Closeable
             {
                 if (PathChildrenCache.this.state.get().equals(State.CLOSED)) {
                     // This ship is closed, don't handle the callback
+                    // 缓存已关闭，不必处理该回调。（小船已翻）
                     return;
                 }
                 if ( event.getResultCode() == KeeperException.Code.OK.intValue() )
                 {
+                    // 请求成功，处理拉取到的子节点信息
                     processChildren(event.getChildren(), mode);
                 }
             }
@@ -707,6 +750,7 @@ public class PathChildrenCache implements Closeable
         log.error("", e);
     }
 
+    /** 确保路径存在 */
     protected void ensurePath() throws Exception
     {
         ensureContainers.ensure();
@@ -814,7 +858,7 @@ public class PathChildrenCache implements Closeable
     }
 
     /**
-     * 处理拉取的所有的children数据
+     * 处理拉取到的子节点信息 （调用该方法是 main-EventThread）
      * @param children 节点当前的最小子节点信息
      * @param mode 拉取节点的模式
      * @throws Exception zookeeper errors
@@ -831,18 +875,19 @@ public class PathChildrenCache implements Closeable
         {
             remove(fullPath);
         }
-
+        //
         for ( String name : children )
         {
             String fullPath = ZKPaths.makePath(path, name);
-
             if ( (mode == RefreshMode.FORCE_GET_DATA_AND_STAT) || !currentData.containsKey(fullPath) )
             {
+                // 刷新模式为强制拉取节点数据 或 这是一个新节点的情况下，拉取子节点的数据
                 getDataAndStat(fullPath);
             }
-
+            // 使用占位符填充到初始缓存信息中，用于标记正在尝试拉取的节点数
             updateInitialSet(name, NULL_CHILD_DATA);
         }
+        // 判断是否需要抛出初始化完成事件
         maybeOfferInitializedEvent(initialSet.get());
     }
 
@@ -905,13 +950,19 @@ public class PathChildrenCache implements Closeable
         }
     }
 
+    /**
+     * 判断是否初始化完成了
+     * @param localInitialSet 缓存的某一时刻值，减少volatile读
+     * @return true/false
+     */
     private boolean hasUninitialized(Map<String, ChildData> localInitialSet)
     {
         if ( localInitialSet == null )
         {
+            // 不需要处理缓存初始化完成事件
             return false;
         }
-
+        // 统计未完成初始化的节点数
         Map<String, ChildData> uninitializedChildren = Maps.filterValues
             (
                 localInitialSet,
@@ -924,6 +975,7 @@ public class PathChildrenCache implements Closeable
                     }
                 }
             );
+        // 所有节点都已完成初始化
         return (uninitializedChildren.size() != 0);
     }
 
