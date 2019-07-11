@@ -523,6 +523,8 @@ public class PathChildrenCache implements Closeable
     }
 
     /**
+     * 关闭缓存
+     *
      * Close/end the cache
      *
      * @throws IOException errors
@@ -532,12 +534,16 @@ public class PathChildrenCache implements Closeable
     {
         if ( state.compareAndSet(State.STARTED, State.CLOSED) )
         {
+            // 原子变量保护，只有started状态能切换到closed状态，释放各种资源
+
             client.getConnectionStateListenable().removeListener(connectionStateListener);
             listeners.clear();
             executorService.close();
+            // 取消watcher
             client.clearWatcherReferences(childrenWatcher);
             client.clearWatcherReferences(dataWatcher);
 
+            // 将引用显式置为null可以帮助gc(释放引用的对象)
             // TODO
             // This seems to enable even more GC - I'm not sure why yet - it
             // has something to do with Guava's cache and circular references
@@ -548,6 +554,8 @@ public class PathChildrenCache implements Closeable
     }
 
     /**
+     * 返回监听器的容器。
+     * 使用{@link ListenerContainer}可以提供统一的管理，实现重用。
      * Return the cache listenable
      *
      * @return listenable
@@ -875,7 +883,7 @@ public class PathChildrenCache implements Closeable
         {
             remove(fullPath);
         }
-        //
+        // 拉取子节点最新数据
         for ( String name : children )
         {
             String fullPath = ZKPaths.makePath(path, name);
