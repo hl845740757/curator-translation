@@ -38,6 +38,8 @@ public class ListenerContainer<T> implements Listenable<T>
     private final Logger                        log = LoggerFactory.getLogger(getClass());
     /**
      * 主要用于建立listener 到其 executor的映射
+     * 由于使用的是{@link java.util.concurrent.ConcurrentMap}，在处理事件的过程中添加新的监听器，
+     * 新的监听器可能立刻收到通知
      */
     private final Map<T, ListenerEntry<T>>      listeners = Maps.newConcurrentMap();
 
@@ -104,6 +106,9 @@ public class ListenerContainer<T> implements Listenable<T>
      * 对每一个监听器执行给定的函数。
      * 函数接收listener作为参数（因为listener具体类型是不确定的，要执行什么操作只有容器的拥有者才知道）。
      *
+     * 为何要用{@link Function}，而不是Consumer?因为这是java1.6版本。
+     * 此{@link Function}非彼Function
+     *
      * Utility - apply the given function to each listener. The function receives
      * the listener as an argument.
      *
@@ -113,6 +118,7 @@ public class ListenerContainer<T> implements Listenable<T>
     {
         for ( final ListenerEntry<T> entry : listeners.values() )
         {
+            // 将该操作提交到每一个executor，function最好是无状态的/线程安全的
             entry.executor.execute
             (
                 new Runnable()
@@ -126,6 +132,7 @@ public class ListenerContainer<T> implements Listenable<T>
                         }
                         catch ( Throwable e )
                         {
+                            // 检查是否需要恢复中断
                             ThreadUtils.checkInterrupted(e);
                             log.error(String.format("Listener (%s) threw an exception", entry.listener), e);
                         }

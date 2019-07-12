@@ -34,6 +34,7 @@ public interface Listenable<T>
      * 添加一个监听器，该监听器将在包含实例的线程中执行（事件通知线程）。
      *
      * 当你的代码支持并发调用的时候，那么使用该方法注册监听器即可。
+     * @see #addListener(Object, Executor)
      *
      * Add the given listener. The listener will be executed in the containing
      * instance's thread.
@@ -59,7 +60,7 @@ public interface Listenable<T>
     public void     addListener(T listener, Executor executor);
 
     /**
-     * 溢出指定监听器。
+     * 移除指定监听器。
      *
      * Remove the given listener
      *

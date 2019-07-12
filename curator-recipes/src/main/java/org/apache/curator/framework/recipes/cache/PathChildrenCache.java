@@ -68,6 +68,11 @@ import java.util.concurrent.atomic.AtomicReference;
  * 1. 不要在处理事件的时候使用{@link PathChildrenCache}中的数据，详细信息查看{@link PathChildrenCacheEvent}的类注释。
  * 2. 在启动缓存之前注册监听器。
  *
+ * 正确的方式：
+ * 1. 只在需要的时候使用{@link #getCurrentData()} 或 {@link #getCurrentData(String)}，而不使用监听器。
+ * 2. 只使用监听器。
+ * 如果既使用{@link PathChildrenCache}获取当前数据，又使用事件处理器，一定要仔细分析。
+ *
  * (假正，假负介绍)
  * - https://blog.csdn.net/xbinworld/article/details/50631342
  *
@@ -566,6 +571,13 @@ public class PathChildrenCache implements Closeable
     }
 
     /**
+     * 返回当前数据。
+     * 没有任何准确性保证，这只是数据的最新视图。数据按排序顺序返回。
+     *
+     * 再次提醒：
+     * 1. 不要在处理事件的时候使用{@link PathChildrenCache}获取数据。
+     * 2. 如果根据当前数据决定是否添加监听器，可能会导致错误（检查结果失效）。
+     *
      * Return the current data. There are no guarantees of accuracy. This is
      * merely the most recent view of the data. The data is returned in sorted order.
      *
@@ -577,6 +589,14 @@ public class PathChildrenCache implements Closeable
     }
 
     /**
+     * 返回给定完整路径的当前数据。
+     * 没有任何准确性保证，这只是数据的最新视图，如果该节点当前不存在，则返回null。
+     *
+     * 警告：如果不清楚带来的影响，不要轻易调用。
+     * eg：
+     * 1. 不要在处理事件的时候使用{@link PathChildrenCache}获取数据。
+     * 2. 如果根据当前数据决定是否添加监听器，可能会导致错误（检查结果失效）。
+     *
      * Return the current data for the given path. There are no guarantees of accuracy. This is
      * merely the most recent view of the data. If there is no child with that path, <code>null</code>
      * is returned.
@@ -590,6 +610,11 @@ public class PathChildrenCache implements Closeable
     }
 
     /**
+     * 您可以清除节点的缓存数据字节作为内存优化一种方式。
+     * 对该节点的{@link ChildData#getData()} 的后续调用将返回<code>null</code>。
+     *
+     * 警告：如果不清楚带来的影响，不要轻易调用。
+     *
      * As a memory optimization, you can clear the cached data bytes for a node. Subsequent
      * calls to {@link ChildData#getData()} for this node will return <code>null</code>.
      *
@@ -597,22 +622,32 @@ public class PathChildrenCache implements Closeable
      */
     public void clearDataBytes(String fullPath)
     {
+        // -1 强制清除
         clearDataBytes(fullPath, -1);
     }
 
     /**
+     * 您可以清除节点的缓存数据字节作为内存优化一种方式。
+     * 对该节点的{@link ChildData#getData()} 的后续调用将返回<code>null</code>。
+     *
+     * 警告：如果不清楚带来的影响，不要轻易调用。
+     *
      * As a memory optimization, you can clear the cached data bytes for a node. Subsequent
      * calls to {@link ChildData#getData()} for this node will return <code>null</code>.
      *
      * @param fullPath  the path of the node to clear
+     *                  要清除数据的路径
      * @param ifVersion if non-negative, only clear the data if the data's version matches this version
+     *                  如果非负，仅当该版本号与数据的版本号匹配的还是才会清除节点数据。
      * @return true if the data was cleared
+     *          如果清除成功则返回true，否则返回false
      */
     public boolean clearDataBytes(String fullPath, int ifVersion)
     {
         ChildData data = currentData.get(fullPath);
         if ( data != null )
         {
+            // 指定版本为负数则强制删除，如果版本号与数据的版本匹配则进行删除(用在竞争操作中)
             if ( (ifVersion < 0) || (ifVersion == data.getStat().getVersion()) )
             {
                 if ( data.getData() != null )
@@ -626,6 +661,10 @@ public class PathChildrenCache implements Closeable
     }
 
     /**
+     * 清除缓存的当且数据，并且不会生成任何事件给监听器，并以标准模式重新拉取数据。
+     *
+     * 警告：如果不清楚带来的影响，不要轻易调用。（会对监听器造成影响）
+     *
      * Clear out current data and begin a new query on the path
      *
      * @throws Exception errors
@@ -633,11 +672,14 @@ public class PathChildrenCache implements Closeable
     public void clearAndRefresh() throws Exception
     {
         currentData.clear();
+        // 重新拉取最新数据
         offerOperation(new RefreshOperation(this, RefreshMode.STANDARD));
     }
 
     /**
-     * 清除缓存当前数据，开始新一轮的查询，并且不生成任何事件给监听者。
+     * 清除缓存当前数据，并且不生成任何事件给监听器。
+     * (该方法用在开始新一轮的查询之前，虽然是public，但是外部最好不要调用)
+     *
      * Clears the current data without beginning a new query and without generating any events
      * for listeners.
      */
@@ -670,8 +712,9 @@ public class PathChildrenCache implements Closeable
      */
     void refresh(final RefreshMode mode) throws Exception
     {
+        // 确保容器节点存在(创建必要节点)
         ensurePath();
-
+        // 拉取children操作完成时的回调
         final BackgroundCallback callback = new BackgroundCallback()
         {
             @Override
@@ -684,7 +727,7 @@ public class PathChildrenCache implements Closeable
                 }
                 if ( event.getResultCode() == KeeperException.Code.OK.intValue() )
                 {
-                    // 请求成功，处理拉取到的子节点信息
+                    // 拉取操作成功，处理拉取到的子节点信息
                     processChildren(event.getChildren(), mode);
                 }
             }
@@ -693,8 +736,13 @@ public class PathChildrenCache implements Closeable
         client.getChildren().usingWatcher(childrenWatcher).inBackground(callback).forPath(path);
     }
 
+    /**
+     * 通知监听者们
+     * @param event 要通知的事件
+     */
     void callListeners(final PathChildrenCacheEvent event)
     {
+        // 这是旧的java版本 不支持lambda表达式的时候写的，读起来可能难受点
         listeners.forEach
             (
                 new Function<PathChildrenCacheListener, Void>()
@@ -704,10 +752,12 @@ public class PathChildrenCache implements Closeable
                     {
                         try
                         {
+                            // 执行监听器的回调方法
                             listener.childEvent(client, event);
                         }
                         catch ( Exception e )
                         {
+                            // 检查是否需要恢复中断
                             ThreadUtils.checkInterrupted(e);
                             handleException(e);
                         }
@@ -749,6 +799,9 @@ public class PathChildrenCache implements Closeable
     }
 
     /**
+     * 处理异常。
+     * 默认处理异常的方式仅仅是记录日志。
+     *
      * Default behavior is just to log the exception
      *
      * @param e the exception
