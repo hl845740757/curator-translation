@@ -1098,20 +1098,23 @@ public class PathChildrenCache implements Closeable
 
     /**
      * 提交一个任务到executor。
+     * 原注释：
      * 该方法是同步的，因为必须检查状态判断缓存是否仍然在启动中。
-     * 如果不（同步）检查，则可能出现一些竞争条件（watcher产生的）。
+     * 如果不检查状态，则可能出现一些竞争条件（watcher产生的）。
      * 即使在缓存关闭之后，该方法仍然可能被这些watcher调用(main-EventThread),因为close方法并不真正的禁用这些watcher。
      *
      * 在没有竞争的情况下，同步的消耗应该是很小的。因为一般来说，该方法仅由 ZK客户端线程调用（main-EventThread）,
      * 并且只有在close方法和zk客户端线程update数据并行执行的时候才会产生竞争，这是我们期望保护的确切状态。
      * --
+     * 点评：这代码有bug，这里的synchronized实际上没有用的！因为未给close加锁！它并不能阻止state的状态改变！
+     * 类似的还有{@link EnsureContainers#ensure()}
      *
      * 搞得我都有点懵逼了，遇见好几次这样的代码了，搞得都怀疑是我知识有问题还是这代码有问题了。。。。
      * close方法不是同步方法，两个方法产生了什么竞争？？？
      *
      * 检查到state为{@link State#CLOSED}，然后执行特定代码没有问题，因为切换到CLOSED以后，state不会再改变，这个先检查后执行的检查结果不会无效。
      * 但是检查到state为{@link State#STARTED},再执行特定代码是不科学的，因为state可能会被切换到{@link State#CLOSED}状态，这个先检查后执行的
-     * 检查结果是会失效的！ 应该给close方法加锁，使得这里的检查结果不会发生改变！
+     * 检查结果是会失效的！ 一厢情愿的自己获取锁，是没有用的，还应该给close方法加锁，使得这里的检查结果不会发生改变！
      *
      * {@link EnsureContainers} 也有这样的问题，{@link AtomicReference}这类原子变量并不能保证简单的先检查后执行的互斥！
      *
@@ -1133,6 +1136,7 @@ public class PathChildrenCache implements Closeable
         {
             // 感觉和EnsureContainers有一样的问题，这里的锁并不能阻塞close方法执行！close方法也不能阻止这里执行！
             // 在这里的时候state可能是close！因为close方法并没有获得锁！
+            // 无论是确保提交的时候是started状态，还是说executor为关闭，这代码都不能保证啊
             executorService.submit(command);
         }
     }
