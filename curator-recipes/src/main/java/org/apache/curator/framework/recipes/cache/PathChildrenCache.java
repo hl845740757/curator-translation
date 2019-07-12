@@ -130,11 +130,14 @@ public class PathChildrenCache implements Closeable
     private final AtomicReference<Map<String, ChildData>> initialSet = new AtomicReference<Map<String, ChildData>>();
     /**
      * 待执行的操作结果。
-     * Q: 为啥不用ConcurrentMap的Set视图，而不是{@link java.util.concurrent.ConcurrentLinkedQueue}呢？
+     * Q: 为啥用ConcurrentMap的Set视图，而不是{@link java.util.concurrent.ConcurrentLinkedQueue}呢？
      * A: 当操作类型和路径相同的时候，这些操作将是等价的。比如：拉取同一个节点的数据， 拉取同一个节点的所有子节点。
      *
      * Q: 那会不会产生某些奇怪的问题呢？
      * A: TODO
+     *
+     * (ConcurrentMap不保证添加操作的顺序，此外有相同操作时，后面的操作无效)
+     * (可能大多数情况下都并不需要这样的优化，对安全性造成的影响不是那么容易分析的)
      */
     private final Set<Operation> operationsQuantizer = Sets.newSetFromMap(Maps.<Operation, Boolean>newConcurrentMap());
     /**
@@ -905,6 +908,7 @@ public class PathChildrenCache implements Closeable
         {
             try
             {
+                // 连接或重连之后会重新拉取最新数据
                 offerOperation(new RefreshOperation(this, RefreshMode.FORCE_GET_DATA_AND_STAT));
                 offerOperation(new EventOperation(this, new PathChildrenCacheEvent(PathChildrenCacheEvent.Type.CONNECTION_RECONNECTED, null)));
             }
@@ -969,12 +973,15 @@ public class PathChildrenCache implements Closeable
             ChildData previousData = currentData.put(fullPath, data);
             if ( previousData == null ) // i.e. new
             {
+                // 不存在旧数据，这是一个新数据，抛出一个CHILD_ADDED事件
                 offerOperation(new EventOperation(this, new PathChildrenCacheEvent(PathChildrenCacheEvent.Type.CHILD_ADDED, data)));
             }
             else if ( previousData.getStat().getVersion() != stat.getVersion() )
             {
+                // 存在旧数据，但是版本号并不同，抛出一个CHILD_UPDATED事件。
                 offerOperation(new EventOperation(this, new PathChildrenCacheEvent(PathChildrenCacheEvent.Type.CHILD_UPDATED, data)));
             }
+            // 尝试压入初始缓存集合中
             updateInitialSet(ZKPaths.getNodeFromPath(fullPath), data);
         }
     }
@@ -1040,10 +1047,16 @@ public class PathChildrenCache implements Closeable
         return (uninitializedChildren.size() != 0);
     }
 
+    /**
+     * 将一个操作提交给{@link #executorService}
+     * @param operation 要提交的操作
+     */
     void offerOperation(final Operation operation)
     {
+        // 压入本地集合，判断是否是一个有效的新操作，说实话可能导致一些潜在的风险
         if ( operationsQuantizer.add(operation) )
         {
+            // 这是一个新操作，需要提交给{@link #executorService}
             submitToExecutor
             (
                 new Runnable()
@@ -1051,9 +1064,12 @@ public class PathChildrenCache implements Closeable
                     @Override
                     public void run()
                     {
+                        // 这里是executor所在的线程。（executor是一个单线程的executor）
                         try
                         {
+                            // 从本地集合中删除，使得能再放入相同的操作
                             operationsQuantizer.remove(operation);
+                            // 真正执行操作
                             operation.invoke();
                         }
                         catch ( InterruptedException e )
@@ -1064,11 +1080,14 @@ public class PathChildrenCache implements Closeable
                             {
                                 handleException(e);
                             }
+                            // 恢复中断
                             Thread.currentThread().interrupt();
                         }
                         catch ( Exception e )
                         {
+                            // 怎么又判断一次中断异常？？？
                             ThreadUtils.checkInterrupted(e);
+                            // 处理异常
                             handleException(e);
                         }
                     }
@@ -1078,6 +1097,24 @@ public class PathChildrenCache implements Closeable
     }
 
     /**
+     * 提交一个任务到executor。
+     * 该方法是同步的，因为必须检查状态判断缓存是否仍然在启动中。
+     * 如果不（同步）检查，则可能出现一些竞争条件（watcher产生的）。
+     * 即使在缓存关闭之后，该方法仍然可能被这些watcher调用(main-EventThread),因为close方法并不真正的禁用这些watcher。
+     *
+     * 在没有竞争的情况下，同步的消耗应该是很小的。因为一般来说，该方法仅由 ZK客户端线程调用（main-EventThread）,
+     * 并且只有在close方法和zk客户端线程update数据并行执行的时候才会产生竞争，这是我们期望保护的确切状态。
+     * --
+     *
+     * 搞得我都有点懵逼了，遇见好几次这样的代码了，搞得都怀疑是我知识有问题还是这代码有问题了。。。。
+     * close方法不是同步方法，两个方法产生了什么竞争？？？
+     *
+     * 检查到state为{@link State#CLOSED}，然后执行特定代码没有问题，因为切换到CLOSED以后，state不会再改变，这个先检查后执行的检查结果不会无效。
+     * 但是检查到state为{@link State#STARTED},再执行特定代码是不科学的，因为state可能会被切换到{@link State#CLOSED}状态，这个先检查后执行的
+     * 检查结果是会失效的！ 应该给close方法加锁，使得这里的检查结果不会发生改变！
+     *
+     * {@link EnsureContainers} 也有这样的问题，{@link AtomicReference}这类原子变量并不能保证简单的先检查后执行的互斥！
+     *
      * Submits a runnable to the executor.
      * <p>
      * This method is synchronized because it has to check state about whether this instance is still open.  Without this check
@@ -1094,6 +1131,8 @@ public class PathChildrenCache implements Closeable
     {
         if ( state.get() == State.STARTED )
         {
+            // 感觉和EnsureContainers有一样的问题，这里的锁并不能阻塞close方法执行！close方法也不能阻止这里执行！
+            // 在这里的时候state可能是close！因为close方法并没有获得锁！
             executorService.submit(command);
         }
     }
