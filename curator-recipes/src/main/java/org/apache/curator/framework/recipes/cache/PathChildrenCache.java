@@ -394,6 +394,7 @@ public class PathChildrenCache implements Closeable
          * 构建初始缓存模式。
          * 缓存将会在启动时同步填充初始缓存值。在{@link PathChildrenCache#start(StartMode)}返回之前，
          * 将会调用{@link PathChildrenCache#rebuild()}以获得该节点的初始视图。
+         * 使用这种方式启动会比较简单，可以立即获得节点的最新视图，但是会多拉取一次数据。
          * （初始节点的拉取不会抛出事件）
          *
          * The cache will be primed (in the foreground) with initial values.
@@ -772,6 +773,7 @@ public class PathChildrenCache implements Closeable
 
     void getDataAndStat(final String fullPath) throws Exception
     {
+        // 当zk客户端线程后台拉取数据结束后，执行的回调方法
         BackgroundCallback callback = new BackgroundCallback()
         {
             @Override
@@ -989,6 +991,7 @@ public class PathChildrenCache implements Closeable
     private void updateInitialSet(String name, ChildData data)
     {
         Map<String, ChildData> localInitialSet = initialSet.get();
+        // != null 表示需要发布init事件
         if ( localInitialSet != null )
         {
             localInitialSet.put(name, data);
@@ -996,17 +999,26 @@ public class PathChildrenCache implements Closeable
         }
     }
 
+    /**
+     * 检查是否需要发布初始化事件
+     * @param localInitialSet 保持操作上下文一致性，减少volatile读操作。
+     *                        对于volatile变量，经常需要存为本地变量，需要防止前后读到不同的数据。
+     *                        重构理论的“用查询代替临时变量”并不适用于volatile变量，重构理论的部分理论是针对单线程的。
+     */
     private void maybeOfferInitializedEvent(Map<String, ChildData> localInitialSet)
     {
         if ( !hasUninitialized(localInitialSet) )
         {
             // all initial children have been processed - send initialized message
-
+            // 所有初始化节点数据都已处理，如果还未发布init事件，则发布事件
+            // getAndSet将initialSet设置为null，确保只发布一次事件
             if ( initialSet.getAndSet(null) != null )   // avoid edge case - don't send more than 1 INITIALIZED event
             {
+                // 进行保护性拷贝
                 final List<ChildData> children = ImmutableList.copyOf(localInitialSet.values());
                 PathChildrenCacheEvent event = new PathChildrenCacheEvent(PathChildrenCacheEvent.Type.INITIALIZED, null)
                 {
+                    // 重写了getInitialData，使得处理初始化事件时可以获得初始化数据
                     @Override
                     public List<ChildData> getInitialData()
                     {

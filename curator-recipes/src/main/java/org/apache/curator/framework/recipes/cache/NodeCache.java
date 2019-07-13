@@ -45,6 +45,27 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
+ * zookeeper单节点缓存。
+ * 一个尝试保留指定Node的数据的本地缓存工具类。该类会观察指定节点，响应节点增删该事件，拉取节点数据等等。
+ * 你可以在该类对象上注册监听器，当节点状态/数据发生改变时，监听器将会收到通知。
+ *
+ * <b>非常重要</b>
+ * 该类不能保持事务同步！该类的使用者必须为 假正(FP) 和假负(FN)作出准备。此外，在更新数据时始终使用版本号，避免覆盖其它进程做出的更改。
+ * --
+ * 和{@link PathChildrenCache}文档很像，也有很多类似的问题。
+ *
+ * 注意：
+ * 1. 在缓存启动前注册监听器。
+ *
+ * <h3>事件处理</h3>
+ * {@link #setNewData(ChildData)}操作由zk线程 main-EventThread 执行，即数据更新操作由 main-EventThread 执行。
+ * 1. 如果你在注册监听器时没有指定executor，那么事件处理也由 main-EventThread线程执行，在处理事件时可以直接从NodeCache中获取数据，
+ * {@link #getCurrentData()}获取到的数据是于事件匹配的。
+ *
+ * 2. 如果你指定了处理使用的executor！你在处理事件，由于事件中不包含数据，只能通过{@link #getCurrentData()}获取数据，将无法获得与事件真正匹配的数据。
+ * 但是！也并不会导致错误，因为最终能得到一致的结果。因为数据是最终一致的！
+ *
+ *
  * <p>A utility that attempts to keep the data from a node locally cached. This class
  * will watch the node, respond to update/create/delete events, pull down the data, etc. You can
  * register a listener that will get notified when changes occur.</p>
@@ -57,27 +78,37 @@ public class NodeCache implements Closeable
 {
     private final Logger log = LoggerFactory.getLogger(getClass());
     private final CuratorFramework client;
+    /** 要缓存的节点路径 */
     private final String path;
+    /** 数据是否采用了压缩存储 */
     private final boolean dataIsCompressed;
+    /** 节点的当前数据 */
     private final AtomicReference<ChildData> data = new AtomicReference<ChildData>(null);
+    /** 缓存的生命周期标识 */
     private final AtomicReference<State> state = new AtomicReference<State>(State.LATENT);
+    /** 监听器管理器(监听器容器) */
     private final ListenerContainer<NodeCacheListener> listeners = new ListenerContainer<NodeCacheListener>();
+    /** zk客户端是否建立着连接 */
     private final AtomicBoolean isConnected = new AtomicBoolean(true);
+    /** 连接状态监听器 */
     private ConnectionStateListener connectionStateListener = new ConnectionStateListener()
     {
         @Override
         public void stateChanged(CuratorFramework client, ConnectionState newState)
         {
+            // 建立了连接或是重连
             if ( (newState == ConnectionState.CONNECTED) || (newState == ConnectionState.RECONNECTED) )
             {
                 if ( isConnected.compareAndSet(false, true) )
                 {
+                    // 如果之前检测到了断开连接，首次连接或重连之后需要重置缓存
                     try
                     {
                         reset();
                     }
                     catch ( Exception e )
                     {
+                        // 检查是否需要恢复中断
                         ThreadUtils.checkInterrupted(e);
                         log.error("Trying to reset after reconnection", e);
                     }
@@ -85,47 +116,58 @@ public class NodeCache implements Closeable
             }
             else
             {
+                // 断开了连接
                 isConnected.set(false);
             }
         }
     };
 
+    /** 节点watcher */
     private Watcher watcher = new Watcher()
     {
         @Override
         public void process(WatchedEvent event)
         {
+            // 当节点状态发生改变，重新拉取节点数据
             try
             {
                 reset();
             }
             catch(Exception e)
             {
+                // 检查是否需要恢复中断 和 处理异常。
+                // zookeeper中很多这中检测，是因为抛出的都是受检异常Exception...
                 ThreadUtils.checkInterrupted(e);
                 handleException(e);
             }
         }
     };
 
+    // 缓存状态
     private enum State
     {
+        /** 初始状态 */
         LATENT,
+        /** 已启动状态，运行状态 */
         STARTED,
+        /** 已关闭状态 */
         CLOSED
     }
 
+    /** 拉取节点数据完成的回调 */
     private final BackgroundCallback backgroundCallback = new BackgroundCallback()
     {
         @Override
         public void processResult(CuratorFramework client, CuratorEvent event) throws Exception
         {
+            // 处理事件，主要有get和checkExists事件
             processBackgroundResult(event);
         }
     };
 
     /**
      * @param client curztor client
-     * @param path the full path to the node to cache
+     * @param path the full path to the node to cache 要缓存的节点路径
      */
     public NodeCache(CuratorFramework client, String path)
     {
@@ -134,8 +176,9 @@ public class NodeCache implements Closeable
 
     /**
      * @param client curztor client
-     * @param path the full path to the node to cache
+     * @param path the full path to the node to cache 要缓存的节点路径
      * @param dataIsCompressed if true, data in the path is compressed
+     *                         如果为true，表示zk中存储的数据是压缩格式
      */
     public NodeCache(CuratorFramework client, String path, boolean dataIsCompressed)
     {
@@ -145,6 +188,9 @@ public class NodeCache implements Closeable
     }
 
     /**
+     * 普通方式启动缓存（启动时不会以同步方式拉取缓存）。缓存并不会自动启动，你必须调用start方法启动缓存。
+     * 拉取完初始数据会抛出节点数据改变事件。
+     *
      * Start the cache. The cache is not started automatically. You must call this method.
      *
      * @throws Exception errors
@@ -155,35 +201,55 @@ public class NodeCache implements Closeable
     }
 
     /**
+     * 启动缓存。缓存并不会自动启动，你必须调用start方法启动缓存。
+     * 你可以选择启动时是否构建缓存的初始视图。
+     *
+     * 如果要构建缓存的初始化视图，在返回前会拉取一次节点的当前数据，再开启监听（多拉取一次数据），拉取初始数据不会抛出事件。
+     * 不过对于NodeCache而言，只维护一个节点数据，多拉取一次数据一般没有太大消耗，但是对于{@link PathChildrenCache}就得仔细考虑。
+     *
      * Same as {@link #start()} but gives the option of doing an initial build
      *
      * @param buildInitial if true, {@link #rebuild()} will be called before this method
      *                     returns in order to get an initial view of the node
+     *                     是否构建初始缓存。如果为true，表示在方法返回之前会调用{@link #rebuild()}方法，
+     *                     以构建缓存的初始化视图。
+     *
      * @throws Exception errors
      */
     public void     start(boolean buildInitial) throws Exception
     {
+        // 只允许启动一次
         Preconditions.checkState(state.compareAndSet(State.LATENT, State.STARTED), "Cannot be started more than once");
-
+        // 监听连接状态
         client.getConnectionStateListenable().addListener(connectionStateListener);
 
         if ( buildInitial )
         {
+            // 注意：创建了必要的父节点，并没有创建自己
             client.checkExists().creatingParentContainersIfNeeded().forPath(path);
+            // 获取节点数据
             internalRebuild();
         }
+        //
         reset();
     }
 
+    /**
+     * 关闭缓存，释放资源
+     * @throws IOException error
+     */
     @Override
     public void close() throws IOException
     {
+        // 只能从运行状态，切换到关闭状态
         if ( state.compareAndSet(State.STARTED, State.CLOSED) )
         {
+            // 清理listener和watcher
             listeners.clear();
             client.clearWatcherReferences(watcher);
             client.getConnectionStateListenable().removeListener(connectionStateListener);
 
+            // 显式置为null，可以帮助GC更快的回收这些不再使用的对象
             // TODO
             // From PathChildrenCache
             // This seems to enable even more GC - I'm not sure why yet - it
@@ -194,6 +260,7 @@ public class NodeCache implements Closeable
     }
 
     /**
+     * 获取缓存的监听管理器，可以通过{@link ListenerContainer#addListener(Object)}等方法添加和移除监听器。
      * Return the cache listenable
      *
      * @return listenable
@@ -206,6 +273,9 @@ public class NodeCache implements Closeable
     }
 
     /**
+     * 重建缓存。
+     * 注意：这是一个阻塞方法。通过查询所有需要的数据重新完整构建内部的缓存，并且不生成任何的时间给监听器们。
+     *
      * NOTE: this is a BLOCKING method. Completely rebuild the internal cache by querying
      * for all needed data WITHOUT generating any events to send to listeners.
      *
@@ -214,9 +284,9 @@ public class NodeCache implements Closeable
     public void     rebuild() throws Exception
     {
         Preconditions.checkState(state.get() == State.STARTED, "Not started");
-
+        // 拉取节点最新数据
         internalRebuild();
-
+        // 重新拉取数据
         reset();
     }
 
@@ -235,6 +305,10 @@ public class NodeCache implements Closeable
     @VisibleForTesting
     volatile Exchanger<Object> rebuildTestExchanger;
 
+    /**
+     * 虽然叫reset(重置)，看做refresh可能更容易理解一些。
+     * @throws Exception zk errors
+     */
     private void     reset() throws Exception
     {
         if ( (state.get() == State.STARTED) && isConnected.get() )
@@ -319,6 +393,7 @@ public class NodeCache implements Closeable
                 }
             );
 
+            // 唤醒测试组件
             if ( rebuildTestExchanger != null )
             {
                 try
@@ -334,6 +409,7 @@ public class NodeCache implements Closeable
     }
     
     /**
+     * 处理异常，默认仅仅记录到日志。
      * Default behavior is just to log the exception
      *
      * @param e the exception
