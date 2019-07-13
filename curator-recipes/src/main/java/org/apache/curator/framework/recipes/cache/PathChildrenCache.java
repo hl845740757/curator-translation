@@ -788,7 +788,7 @@ public class PathChildrenCache implements Closeable
         }
         else
         {
-
+            // 始终使用getData()代替exists()以避免留下不必要的watcher，这些watcher是一种资源泄漏
             // always use getData() instead of exists() to avoid leaving unneeded watchers which is a type of resource leak
             if ( dataIsCompressed && cacheData )
             {
