@@ -47,8 +47,9 @@ public interface Listenable<T>
      * 添加一个监听器，该监听器将在给定的executor中执行。
      * 如果要保证事件的顺序，那么{@link Executor}必须是单线程的！
      *
-     * 直观的好处：当你的执行环境是一个 单线程的 executor的时候，可以直接提交到你所在的线程！从而消除不必要的同步。
-     * （我越来越感受到Executor框架的好处了，不直接使用线程对象，而是使用Executor对象，这样会带来很多好处）
+     * 直观的好处：当你的执行环境是一个 单线程的 executor的时候，可以直接将事件提交到你所在的线程！从而消除执行代码的同步处理。
+     * 我越来越感受到Executor框架的好处了，不直接使用线程对象，而是使用Executor对象，这样会带来很多好处，
+     * {@link Executor} {@link java.util.concurrent.ExecutorService}订了几个看似简单却非常有用的接口，而Thread却没有。
      * （不得不承认netty的E ventExecutor 和 EventLoop 设计的很好。）
      *
      * Add the given listener. The listener will be executed using the given
@@ -56,6 +57,7 @@ public interface Listenable<T>
      *
      * @param listener listener to add
      * @param executor executor to run listener in
+     *                 listener执行的环境
      */
     public void     addListener(T listener, Executor executor);
 

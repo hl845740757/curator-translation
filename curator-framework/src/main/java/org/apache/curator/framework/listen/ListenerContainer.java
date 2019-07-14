@@ -63,7 +63,6 @@ public class ListenerContainer<T> implements Listenable<T>
      *
      * @param listener listener to add.
      * @param executor executor to run listener in.
-     *                 listener执行的环境
      */
     @Override
     public void addListener(T listener, Executor executor)
