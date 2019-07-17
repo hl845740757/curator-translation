@@ -32,6 +32,7 @@ import org.apache.curator.framework.listen.Listenable;
 import org.apache.curator.framework.listen.ListenerContainer;
 import org.apache.curator.framework.state.ConnectionState;
 import org.apache.curator.framework.state.ConnectionStateListener;
+import org.apache.curator.utils.CloseableExecutorService;
 import org.apache.curator.utils.PathUtils;
 import org.apache.curator.utils.ThreadUtils;
 import org.apache.curator.utils.ZKPaths;
@@ -60,6 +61,14 @@ import static com.google.common.base.Preconditions.checkNotNull;
 import static org.apache.curator.utils.PathUtils.validatePath;
 
 /**
+ * 一个尝试将指定zk路径下的所有子节点数据保存下来的实用本地缓存。
+ * 该类将会watch指定的zk路径，响应子节点的增删改事件，并拉取所有的数据等。
+ * 你可以注册一个{@link TreeCacheListener}，当产生改变的时候，listener将会得到通知。
+ *
+ * <b>非常重要</b>
+ * 该类不能保持事务同步！该类的使用者必须为 假正(FP) 和假负(FN)作出准备。此外，在更新数据时始终使用版本号，避免覆盖其它进程做出的更改。
+ *
+ *
  * <p>A utility that attempts to keep all data from all children of a ZK path locally cached. This class
  * will watch the ZK path, respond to update/create/delete events, pull down the data, etc. You can
  * register a listener that will get notified when changes occur.</p>
@@ -74,15 +83,29 @@ public class TreeCache implements Closeable
     private final boolean createParentNodes;
     private final TreeCacheSelector selector;
 
+    // ---------------------------------- Builder 模式，引导创建TreeCache -------------------------
     public static final class Builder
     {
         private final CuratorFramework client;
+        /** 要缓存的目录节点 */
         private final String path;
+        /** 是否缓存数据，默认true。一般使用缓存就是为了获取节点数据的 */
         private boolean cacheData = true;
+        /** 节点数据是否进行了压缩 */
         private boolean dataIsCompressed = false;
+        /**
+         * TreeCacheListener的执行环境，由它来通知监听器和后台拉取数据。
+         * 注意: {@link TreeCache}在关闭的时候 {@link #close()}会关闭Executor!!!!没有选项。
+         * 因此传入的{@link ExecutorService}最好是的{@link ExecutorService}.
+         */
         private ExecutorService executorService = null;
+        /** 最大缓存深度，树的深度，默认Max即缓存所有节点 */
         private int maxDepth = Integer.MAX_VALUE;
+        /** 是否创建父节点，也就是说要缓存的节点的父节点可以不存在 */
         private boolean createParentNodes = false;
+        /**
+         * 缓存节点选择器，用于判断哪些节点缓存，哪些节点不缓存。
+         */
         private TreeCacheSelector selector = new DefaultTreeCacheSelector();
 
         private Builder(CuratorFramework client, String path)
@@ -99,12 +122,15 @@ public class TreeCache implements Closeable
             ExecutorService executor = executorService;
             if ( executor == null )
             {
+                // 注意：为了保证事件的顺序，必须是单线程的executor！！！
                 executor = Executors.newSingleThreadExecutor(defaultThreadFactory);
             }
             return new TreeCache(client, path, cacheData, dataIsCompressed, maxDepth, executor, createParentNodes, selector);
         }
 
         /**
+         * 设置是否缓存每个节点的数据。默认为true。
+         *
          * Sets whether or not to cache byte data per node; default {@code true}.
          */
         public Builder setCacheData(boolean cacheData)
@@ -114,6 +140,7 @@ public class TreeCache implements Closeable
         }
 
         /**
+         * 设置节点数据是否进行了压缩，默认false。
          * Sets whether or to decompress node data; default {@code false}.
          */
         public Builder setDataIsCompressed(boolean dataIsCompressed)
@@ -123,6 +150,8 @@ public class TreeCache implements Closeable
         }
 
         /**
+         * 设置发布事件的executor (listener的执行环境)。如果不设置的话，会创建一个默认的executor。
+         *
          * Sets the executor to publish events; a default executor will be created if not specified.
          */
         public Builder setExecutor(ThreadFactory threadFactory)
@@ -131,8 +160,15 @@ public class TreeCache implements Closeable
         }
 
         /**
+         * 注意：为了保证事件的顺序，必须是单线程的executor！！！
+         * 这个{@link Deprecated}是译者我(wjybxx)加的，我建议使用{@link #setExecutor(ThreadFactory)}，
+         * 否则容易忽略两个问题：
+         * 1. ExecutorService 必须是单线程的，否则无法保证事件的顺序，无法保证数据的一致性。
+         * 2. ExecutorService 会在TreeCache关闭的时候被关闭！！！如果外部也使用该ExecutorService，会出现问题。
+         *
          * Sets the executor to publish events; a default executor will be created if not specified.
          */
+        @Deprecated
         public Builder setExecutor(ExecutorService executorService)
         {
             this.executorService = checkNotNull(executorService);
@@ -140,6 +176,11 @@ public class TreeCache implements Closeable
         }
 
         /**
+         * 设置缓存的最大探索/观察深度。
+         * 如果{@code maxDepth} 为 {@code 0}，则表示只缓存指定的根节点，就像{@link NodeCache}。
+         * 如果{@code maxDepth} 为 {@code 1}，则表示只缓存根节点的直接子节点，就像{@link PathChildrenCache}。
+         * 默认值为{@code Integer.MAX_VALUE}，表示缓存缓存指定节点的所有子节点。
+         *
          * Sets the maximum depth to explore/watch.  A {@code maxDepth} of {@code 0} will watch only
          * the root node (like {@link NodeCache}); a {@code maxDepth} of {@code 1} will watch the
          * root node and its immediate children (kind of like {@link PathChildrenCache}.
@@ -152,6 +193,10 @@ public class TreeCache implements Closeable
         }
 
         /**
+         * 设置是否自动创建缓存节点的父节点。
+         * 默认情况下，TreeCache不会自动创建要缓存的节点的父节点，可以使用该方法改变该行为。
+         * 注意：父节点会被创建为容器节点。
+         *
          * By default, TreeCache does not auto-create parent nodes for the cached path. Change
          * this behavior with this method. NOTE: parent nodes are created as containers
          *
@@ -165,6 +210,9 @@ public class TreeCache implements Closeable
         }
 
         /**
+         * 设置treeCache的子节点选择器，用于选择哪些节点需要缓存，哪些节点不需要缓存。
+         * 默认使用{@link DefaultTreeCacheSelector} (缓存所有节点)，可以通过该方法改变。
+         *
          * By default, {@link DefaultTreeCacheSelector} is used. Change the selector here.
          *
          * @param selector new selector
@@ -178,6 +226,12 @@ public class TreeCache implements Closeable
     }
 
     /**
+     * 使用指定的客户端和路径创建一个Builder，以更好的配置选项.
+     * (用于引导创建{@link TreeCache})
+     *
+     * 如果client是一个命名空间，那么TreeCache上的所有操作结果都将以名称空间为单位，包括所有已发布的事件。
+     * 给定的路径是TreeCache观察和探索的根节点。如果给定路径中不存在子节点，则TreeCache最初将为空。
+     *
      * Create a TreeCache builder for the given client and path to configure advanced options.
      * <p/>
      * If the client is namespaced, all operations on the resulting TreeCache will be in terms of
@@ -186,14 +240,18 @@ public class TreeCache implements Closeable
      * be initially empty.
      *
      * @param client the client to use; may be namespaced
+     *               使用的curator客户端，也可能是一个命名空间。
      * @param path   the path to the root node to watch/explore; this path need not actually exist on
      *               the server
+     *               要缓存的根节点路径，该节点并不需要在服务器上真实存在。
      * @return a new builder
      */
     public static Builder newBuilder(CuratorFramework client, String path)
     {
         return new Builder(client, path);
     }
+
+    // -------------------------------------------------- TreeNode ---------------------------------------------------
 
     private enum NodeState
     {
@@ -508,8 +566,14 @@ public class TreeCache implements Closeable
      */
     private final AtomicBoolean isInitialized = new AtomicBoolean(false);
 
+    /** 缓存对应的根节点{@link Builder#path} */
     private final TreeNode root;
     private final CuratorFramework client;
+    /**
+     * listener的执行环境。
+     * 这里不得不说的一点是：调用{@link TreeCache#close()}的时候会关闭executor(都不给一个选项)。
+     * 用的不是{@link CloseableExecutorService}。
+     */
     private final ExecutorService executorService;
     private final boolean cacheData;
     private final boolean dataIsCompressed;

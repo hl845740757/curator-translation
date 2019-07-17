@@ -47,7 +47,8 @@ public class PathChildrenCacheEvent
     private final Type type;
 
     /**
-     * 该事件对于的数据，如果是子节点事件，该字段不为null。（节点移除时间返回的删除前的数据）
+     * 该事件对于的数据，如果是子节点事件，该字段不为null。（节点删除事件返回的删除前的数据）
+     * 处理事件时，它不一定是最新的数据，即 {@link PathChildrenCache#getCurrentData(String)} == data 不一定为true。
      */
     private final ChildData data;
 

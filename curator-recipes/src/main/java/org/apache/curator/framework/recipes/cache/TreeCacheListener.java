@@ -22,11 +22,19 @@ package org.apache.curator.framework.recipes.cache;
 import org.apache.curator.framework.CuratorFramework;
 
 /**
+ * {@link TreeCache}事件处理监听器。
+ *
  * Listener for {@link TreeCache} changes
  */
 public interface TreeCacheListener
 {
     /**
+     * {@link TreeCache}的事件回调。
+     * 与相同的警告：{@link PathChildrenCacheListener#childEvent(CuratorFramework, PathChildrenCacheEvent)}
+     * 该事件的处理线程是独立的线程，与更新{@link TreeCache}数据的线程是两个线程，处理事件时最好不要使用{@link TreeCache}。
+     *
+     * 更新数据的线程是 main-EventThread,处理事件的线程是TreeCache创建的一个单线程的Executor。
+     *
      * Called when a change has occurred
      *
      * @param client the client
