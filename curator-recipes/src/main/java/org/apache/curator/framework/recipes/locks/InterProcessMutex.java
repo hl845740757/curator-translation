@@ -31,21 +31,38 @@ import java.util.concurrent.atomic.AtomicInteger;
 import org.apache.curator.utils.PathUtils;
 
 /**
+ * 进程级的互斥锁。
+ * 这是一个跨越JVM的可重入锁（可重入分布式锁）。使用zookeeper持有锁。
+ * 所有使用相同锁路径的JVM中的所有进程都将实现进程间的“临界区”。
+ * 此外，这个互斥是“公平的”—每个用户将按请求的顺序获得互斥（从zk的角度看）
+ *
  * A re-entrant mutex that works across JVMs. Uses Zookeeper to hold the lock. All processes in all JVMs that
  * use the same lock path will achieve an inter-process critical section. Further, this mutex is
  * "fair" - each user will get the mutex in the order requested (from ZK's point of view)
  */
 public class InterProcessMutex implements InterProcessLock, Revocable<InterProcessMutex>
 {
+    /** 锁的内部结构 */
     private final LockInternals internals;
+    /** 锁的路径 */
     private final String basePath;
-
+    /** 本地线程的锁信息 */
     private final ConcurrentMap<Thread, LockData> threadData = Maps.newConcurrentMap();
 
+    /**
+     * 每个线程的锁信息
+     */
     private static class LockData
     {
+        /** 与该数据绑定的线程 */
         final Thread owningThread;
+        /** 当前线程抢占的节点路径 */
         final String lockPath;
+        /**
+         * 锁的获得次数！实现重入！
+         * 这是一个很重要的优化，获得锁以后，锁的重入其实是在本地完成的。
+         * 只有在第一次申请锁和最后一次释放锁的时候才会真正与zookeeper通信！
+         */
         final AtomicInteger lockCount = new AtomicInteger(1);
 
         private LockData(Thread owningThread, String lockPath)
@@ -59,7 +76,7 @@ public class InterProcessMutex implements InterProcessLock, Revocable<InterProce
 
     /**
      * @param client client
-     * @param path   the path to lock
+     * @param path   the path to lock 互斥锁节点路径。
      */
     public InterProcessMutex(CuratorFramework client, String path)
     {
@@ -77,6 +94,9 @@ public class InterProcessMutex implements InterProcessLock, Revocable<InterProce
     }
 
     /**
+     * 尝试获得互斥锁 - 阻塞直到锁可用。
+     * 注意：同一个线程可以调用acquire实现重入，
+     *
      * Acquire the mutex - blocking until it's available. Note: the same thread
      * can call acquire re-entrantly. Each call to acquire must be balanced by a call
      * to {@link #release()}
@@ -218,20 +238,21 @@ public class InterProcessMutex implements InterProcessLock, Revocable<InterProce
            Note on concurrency: a given lockData instance
            can be only acted on by a single thread so locking isn't necessary
         */
-
         Thread currentThread = Thread.currentThread();
 
         LockData lockData = threadData.get(currentThread);
         if ( lockData != null )
         {
-            // re-entering
+            // re-entering 已获得锁，锁重入，在本地完成！这是个重要的优化！
+            // 不论采用redis，数据库实现分布式锁，重入都可以这样
             lockData.lockCount.incrementAndGet();
             return true;
         }
-
         String lockPath = internals.attemptLock(time, unit, getLockNodeBytes());
+        // 获得锁成功
         if ( lockPath != null )
         {
+            // 标记为当前线程获得了该分布式锁
             LockData newLockData = new LockData(currentThread, lockPath);
             threadData.put(currentThread, newLockData);
             return true;

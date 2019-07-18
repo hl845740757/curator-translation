@@ -269,11 +269,15 @@ public class TreeCache implements Closeable
 
     private final class TreeNode implements Watcher, BackgroundCallback
     {
-
+        /** 该节点状态 */
         volatile NodeState nodeState = NodeState.PENDING;
+        /** 该节点数据 */
         volatile ChildData childData;
+        /** 父节点 */
         final TreeNode parent;
+        /** 该节点的路径 */
         final String path;
+        /** 当前节点的子节点们，既是concurrent，又是volatile */
         volatile ConcurrentMap<String, TreeNode> children;
         final int depth;
 
