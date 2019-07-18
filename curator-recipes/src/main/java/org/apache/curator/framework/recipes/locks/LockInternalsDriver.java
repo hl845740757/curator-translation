@@ -22,7 +22,8 @@ import org.apache.curator.framework.CuratorFramework;
 import java.util.List;
 
 /**
- * 互斥锁驱动
+ * 互斥锁驱动。
+ * 可以进行扩展，实现自定义的互斥锁实现。
  */
 public interface LockInternalsDriver extends LockInternalsSorter
 {
@@ -41,7 +42,7 @@ public interface LockInternalsDriver extends LockInternalsSorter
      * 为当前线程在锁路径下创建一个对应的子节点。
      * @param client curator客户端
      * @param path 互斥锁路径
-     * @param lockNodeBytes 子节点前缀
+     * @param lockNodeBytes 申请锁时，需要存储的数据。 ----- 创建的子节点也可以存储数据，默认null。
      * @return ourPath 临时顺序节点的完整路径
      * @throws Exception zookeeper errors
      */

@@ -47,10 +47,12 @@ public class StandardLockInternalsDriver implements LockInternalsDriver
         String ourPath;
         if ( lockNodeBytes != null )
         {
+            // 指定了存储数据，使用指定数据创建节点
             ourPath = client.create().creatingParentContainersIfNeeded().withProtection().withMode(CreateMode.EPHEMERAL_SEQUENTIAL).forPath(path, lockNodeBytes);
         }
         else
         {
+            // 没有额外要存储的数据
             ourPath = client.create().creatingParentContainersIfNeeded().withProtection().withMode(CreateMode.EPHEMERAL_SEQUENTIAL).forPath(path);
         }
         return ourPath;

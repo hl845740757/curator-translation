@@ -62,9 +62,10 @@ public interface InterProcessLock
      * Acquire the mutex - blocks until it's available or the given time expires. Each call to acquire that returns true must be balanced by a call
      * to {@link #release()}
      *
-     * @param time time to wait
-     * @param unit time unit
+     * @param time time to wait 等待的最大时间
+     * @param unit time unit 时间单位
      * @return true if the mutex was acquired, false if not
+     *         当且仅当在限定时间内获得了锁则返回true，否则返回false。
      * @throws Exception ZK errors, connection interruptions
      */
     public boolean acquire(long time, TimeUnit unit) throws Exception;
@@ -76,6 +77,7 @@ public interface InterProcessLock
      * Perform one release of the mutex.
      *
      * @throws Exception ZK errors, interruptions, current thread does not own the lock
+     *         如果调用release方法的线程没有获得锁，则抛出异常。
      */
     public void release() throws Exception;
 

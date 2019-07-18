@@ -41,6 +41,9 @@ import java.util.List;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
+/**
+ * 这名字不好翻译啊。 锁内件？
+ */
 public class LockInternals
 {
     private final CuratorFramework                  client;
