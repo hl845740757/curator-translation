@@ -18,9 +18,17 @@
  */
 package org.apache.curator.framework.recipes.locks;
 
+/**
+ * 获取锁测试结果
+ */
 public class PredicateResults
 {
+    /** 是否成功获取了锁 */
     private final boolean   getsTheLock;
+    /**
+     * 如果未获得锁，那么应该监听哪个节点！！！
+     * (curator的实现很巧妙，最大化的减少了事件数量)
+     */
     private final String    pathToWatch;
 
     public PredicateResults(String pathToWatch, boolean getsTheLock)
