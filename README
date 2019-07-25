@@ -18,3 +18,6 @@ Curator is a set of Java libraries that make using Apache ZooKeeper much easier.
 Website: http://curator.apache.org/
 
 Getting started: http://curator.apache.org/getting-started.html
+
+### 最近暂停一下
+最近实在有点忙，工作忙是一方面，自己的游戏框架也正在向多线程演进，忙不过来。。。。
