@@ -28,6 +28,26 @@ import java.util.Collection;
 import java.util.List;
 
 /**
+ *
+ * <p>
+ *     这是一个跨越JVM的可重入读写锁（可重入分布式锁）。使用zookeeper持有锁。
+ *     所有使用相同锁路径的JVM中的所有进程都将实现进程间的“临界区”。
+ *     此外，这个互斥是“公平的”—每个用户将按请求的顺序获得互斥（从zk的角度看）
+ * </p>
+ *
+ * <p>
+ *     读写锁维护一对关联的锁，一个用于只读操作，一个用于写入。只要没有writer，多个reader就可以同时持有读锁，写锁是独占的。
+ *     (和JDK的锁其实是类似的，读读共享，读写互斥，写读互斥，写写互斥)
+ * </p>
+ *
+ * <h3>锁重入规则</h3>
+ *     该锁读写都可以重入。在持有写锁的线程/进程释放写锁之前读锁无法重入。
+ *     此外，一个writer(获得写锁的)可以继续获取读锁，反过来却不行。一个reader(获得读锁的线程)申请写锁将永远不会成功。
+ *
+ * <h3>锁降级</h3>
+ *     可重入性还允许从写锁降级为读锁，方法是获取写锁，然后获取读锁，然后释放写锁。但是，无法从读锁升级到写锁。
+ *     (为何不支持锁升级？你并不能让其他获得读锁的线程释放读锁)
+ *
  * <p>
  *    A re-entrant read/write mutex that works across JVMs. Uses Zookeeper to hold the lock. All processes
  *    in all JVMs that use the same lock path will achieve an inter-process critical section. Further, this mutex is
