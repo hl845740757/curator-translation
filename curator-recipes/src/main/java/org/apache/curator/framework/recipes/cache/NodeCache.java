@@ -60,10 +60,10 @@ import java.util.concurrent.atomic.AtomicReference;
  * <h3>事件处理</h3>
  * {@link #setNewData(ChildData)}操作由zk线程 main-EventThread 执行，即数据更新操作由 main-EventThread 执行。
  * 1. 如果你在注册监听器时没有指定executor，那么事件处理也由 main-EventThread线程执行，在处理事件时可以直接从NodeCache中获取数据，
- * {@link #getCurrentData()}获取到的数据是于事件匹配的。
+ * {@link #getCurrentData()}获取到的数据是与事件匹配的。
  *
  * 2. 如果你指定了处理使用的executor！你在处理事件，由于事件中不包含数据，只能通过{@link #getCurrentData()}获取数据，将无法获得与事件真正匹配的数据。
- * 但是！也并不会导致错误，因为最终能得到一致的结果。因为数据是最终一致的！
+ * 但是最终能得到一致的结果。因为数据是最终一致的！收到的事件数是相同的，那么最终结果是一样的，但个人觉得不算个好设计。
  *
  *
  * <p>A utility that attempts to keep the data from a node locally cached. This class
@@ -317,28 +317,40 @@ public class NodeCache implements Closeable
         }
     }
 
+    /**
+     * 尝试重新构建节点数据
+     */
     private void     internalRebuild() throws Exception
     {
         try
         {
             Stat    stat = new Stat();
             byte[]  bytes = dataIsCompressed ? client.getData().decompressed().storingStatIn(stat).forPath(path) : client.getData().storingStatIn(stat).forPath(path);
+            // 拉取节点数据成功，更新缓存
             data.set(new ChildData(path, stat, bytes));
         }
         catch ( KeeperException.NoNodeException e )
         {
+            // 发现节点不存在，将本地节点置为null
             data.set(null);
         }
     }
 
+    /**
+     * 处理后台拉取到的数据
+     * @param event 后台操作对应的结果
+     * @throws Exception errors
+     */
     private void processBackgroundResult(CuratorEvent event) throws Exception
     {
+        // 该节点只会发起getData和checkExists操作
         switch ( event.getType() )
         {
             case GET_DATA:
             {
                 if ( event.getResultCode() == KeeperException.Code.OK.intValue() )
                 {
+                    // 如果获取数据成功，则应用新数据到本地缓存
                     ChildData childData = new ChildData(path, event.getStat(), event.getData());
                     setNewData(childData);
                 }
@@ -349,10 +361,12 @@ public class NodeCache implements Closeable
             {
                 if ( event.getResultCode() == KeeperException.Code.NONODE.intValue() )
                 {
+                    // 如果检查到节点不存在，则将本地数据置为null
                     setNewData(null);
                 }
                 else if ( event.getResultCode() == KeeperException.Code.OK.intValue() )
                 {
+                    // 检测到节点存在，发起拉取数据请求
                     if ( dataIsCompressed )
                     {
                         client.getData().decompressed().usingWatcher(watcher).inBackground(backgroundCallback).forPath(path);
@@ -372,6 +386,8 @@ public class NodeCache implements Closeable
         ChildData   previousData = data.getAndSet(newData);
         if ( !Objects.equal(previousData, newData) )
         {
+            // 提交事件到目标线程，这里其实存在一些问题，nodeChanged真正执行的时候，这里的数据可能又产生了变化，
+            // 如果nodeChanged执行在别的线程，做出来的推断可能是错误的！比如从NodeCache中取出来最新数据为null，你推断此时数据被删除了，但其实你当前的事件可能只是节点数据改变产生的。
             listeners.forEach
             (
                 new Function<NodeCacheListener, Void>()
@@ -385,6 +401,7 @@ public class NodeCache implements Closeable
                         }
                         catch ( Exception e )
                         {
+                            // 检查中断是个好习惯，避免错误的捕获异常
                             ThreadUtils.checkInterrupted(e);
                             log.error("Calling listener", e);
                         }

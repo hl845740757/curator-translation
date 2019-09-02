@@ -277,8 +277,12 @@ public class TreeCache implements Closeable
         final TreeNode parent;
         /** 该节点的路径 */
         final String path;
-        /** 当前节点的子节点们，既是concurrent，又是volatile */
+        /**
+         * 当前节点的子节点们。
+         * {@link AtomicReferenceFieldUpdater}要求属性必须是volatile。
+         */
         volatile ConcurrentMap<String, TreeNode> children;
+        /** 该节点的深度，代替遍历 */
         final int depth;
 
         TreeNode(String path, TreeNode parent)

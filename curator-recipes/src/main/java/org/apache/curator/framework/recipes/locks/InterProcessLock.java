@@ -57,7 +57,7 @@ public interface InterProcessLock
 
     /**
      * 尝试在限定时间内获得锁 - 阻塞直到锁可用或超时。
-     *  注意：每一次acquire调用返回true时，必须通过{@link #release()}调用来进行平衡。
+     * 注意：每一次acquire调用返回true时，必须通过{@link #release()}调用来进行平衡。
      *
      * Acquire the mutex - blocks until it's available or the given time expires. Each call to acquire that returns true must be balanced by a call
      * to {@link #release()}
