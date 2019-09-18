@@ -66,7 +66,7 @@ public class InterProcessMutex implements InterProcessLock, Revocable<InterProce
          * 锁的获得次数！实现重入！
          * 这是一个很重要的优化，获得锁以后，锁的重入其实是在本地完成的。
          * 只有在第一次申请锁和最后一次释放锁的时候才会真正与zookeeper通信！
-         * 这个属性好像并不会被其它线程访问啊 -- 定义成atomic容易造成误解啊。可能只是想定义成final吧。
+         * 这个属性好像并不会被其它线程访问啊 -- 定义成atomic容易造成误解啊。
          */
         final AtomicInteger lockCount = new AtomicInteger(1);
 
