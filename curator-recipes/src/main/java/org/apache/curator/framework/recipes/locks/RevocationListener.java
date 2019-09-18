@@ -19,7 +19,7 @@
 package org.apache.curator.framework.recipes.locks;
 
 /**
- * 锁撤销操作监听提
+ * 锁撤销操作监听器
  * @param <T>
  */
 public interface RevocationListener<T>

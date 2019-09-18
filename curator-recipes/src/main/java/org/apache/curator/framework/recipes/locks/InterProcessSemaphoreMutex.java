@@ -63,8 +63,7 @@ public class InterProcessSemaphoreMutex implements InterProcessLock
     @Override
     public void acquire() throws Exception
     {
-        // 看起来是安全的，因为上一个线程不释放，当前线程就无法获得资源，也就无法赋值
-        // 但实际上和release存在竞态条件
+        // 上一个线程不释放，当前线程就无法获得资源，也就无法赋值
         lease = semaphore.acquire();
     }
 
@@ -79,7 +78,6 @@ public class InterProcessSemaphoreMutex implements InterProcessLock
             return false;
         }
         // 这里能保证只有一个线程走到这里 - 如果上一个线程没有释放资源，那么就无法走到这里。
-        // 这里同样和release存在竞态条件
         lease = acquiredLease;
         return true;
     }
@@ -91,13 +89,7 @@ public class InterProcessSemaphoreMutex implements InterProcessLock
         // 这个检测并不能保证安全性，如果错误的线程调用了release，后续的代码将可能造成错误
         Preconditions.checkState(lease != null, "Not acquired");
         this.lease = null;
-        // 释放资源 - 理论上讲，该行代码是由潜在风险的！并不能保证 close() 在 this.lease = null 之后执行！
-        // volatile只有写前、读后保证。 - 写volatile之前的代码不会重排序到写volatile之后，读volatile之后的代码不会重排序到读volatile之前。
-        // 由于封装的太厉害，无法清晰的分析，执行顺序可能是
-        // 1. close()
-        // 2. lease = acquire()
-        // 3. this.lease = null
-        // 如果实际没有出现过，可能是因为网络上的消耗时间较长
+        // close必须在 lease = null 之后
         lease.close();
     }
 
