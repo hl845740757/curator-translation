@@ -28,8 +28,8 @@ import java.util.Map;
 import java.util.concurrent.Executor;
 
 /**
- * listener的容器。
- * 实现listener的管理。
+ * listener的容器。实现listener的管理。
+ * 算是“组合优于继承”一个很好的范例了，很多地方都使用到了该对象。
  *
  * Abstracts an object that has listeners
  */

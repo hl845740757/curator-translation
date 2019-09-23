@@ -50,6 +50,8 @@ import java.util.concurrent.atomic.AtomicReference;
 import org.apache.curator.utils.PathUtils;
 
 /**
+ * leader选举器。
+ *
  * <p>
  * Abstraction to select a "leader" amongst multiple contenders in a group of JMVs connected
  * to a Zookeeper cluster. If a group of N thread/processes contends for leadership, one will

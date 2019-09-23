@@ -194,7 +194,8 @@ public class SharedValue implements Closeable, SharedValueReader
     }
 
     /**
-     * 尝试CAS更新共享数据的值，当且仅当节点当前数据与
+     * 尝试CAS更新共享数据的值，仅当共享值的值在newValue指定的版本之后没有更改时才更改该值，否则更新失败，并更新客户端的数据视图。
+     * 例如：如果赋值失败，你可以调用{@link #getValue()}获取最新的值。
      *
      * Changes the shared value only if its value has not changed since the version specified by
      * newValue. If the value has changed, the value is not set and this client's view of the

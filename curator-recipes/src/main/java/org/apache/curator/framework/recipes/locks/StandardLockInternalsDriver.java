@@ -74,6 +74,14 @@ public class StandardLockInternalsDriver implements LockInternalsDriver
         return standardFixForSorting(str, lockName);
     }
 
+    /**
+     * 去除锁名字前缀。
+     * lock-00000001 -> 00000001
+     *
+     * @param str 临时节点的全民
+     * @param lockName 锁名字 -> 临时节点名字前缀
+     * @return 去除锁名字前缀后的节点信息
+     */
     public static String standardFixForSorting(String str, String lockName)
     {
         int index = str.lastIndexOf(lockName);

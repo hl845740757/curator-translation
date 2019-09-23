@@ -54,6 +54,11 @@ import java.util.concurrent.atomic.AtomicReference;
 import org.apache.curator.utils.PathUtils;
 
 /**
+ * 选举锁。
+ * 在连接到ZooKeeper集群的一组JMV中的多个竞争者中选择“leader”的抽象。
+ * 如果一个由n个线程/进程组成的组争夺领导权，则将随机指派一个线程/进程作为领导，
+ * 直到它释放领导权，此时将随机从该组中选择另一个线程/进程作为leader。 -- 本质是抢占节点，创建一个临时节点，节点过期则重新选举
+ *
  * <p>
  * Abstraction to select a "leader" amongst multiple contenders in a group of JMVs connected to
  * a Zookeeper cluster. If a group of N thread/processes contend for leadership one will
@@ -65,15 +70,43 @@ public class LeaderLatch implements Closeable
 {
     private final Logger log = LoggerFactory.getLogger(getClass());
     private final CuratorFramework client;
+    /**
+     * 锁路径
+     */
     private final String latchPath;
+    /**
+     * 我作为参与者的id
+     */
     private final String id;
+    /**
+     * 锁的状态
+     */
     private final AtomicReference<State> state = new AtomicReference<State>(State.LATENT);
+    /**
+     * 当前是否是leader
+     */
     private final AtomicBoolean hasLeadership = new AtomicBoolean(false);
+    /**
+     * 作为参与者的路径
+     */
     private final AtomicReference<String> ourPath = new AtomicReference<String>();
+    /**
+     * 监听器容器。
+     */
     private final ListenerContainer<LeaderLatchListener> listeners = new ListenerContainer<LeaderLatchListener>();
+    /**
+     * 关闭模式：关闭锁时是否通知监听器，默认不通知。
+     */
     private final CloseMode closeMode;
+    /**
+     * 启动时注册的任务。
+     * 其实它这里没有太大必要使用{@link AtomicReference}
+     */
     private final AtomicReference<Future<?>> startTask = new AtomicReference<Future<?>>();
 
+    /**
+     * 监听连接状态
+     */
     private final ConnectionStateListener listener = new ConnectionStateListener()
     {
         @Override
@@ -83,13 +116,21 @@ public class LeaderLatch implements Closeable
         }
     };
 
+    /**
+     * 锁名字 -- 锁路径下顺序节点的前缀
+     */
     private static final String LOCK_NAME = "latch-";
 
+    /**
+     * 锁节点排序器。
+     * -> 计算临时顺序节点的序号。
+     */
     private static final LockInternalsSorter sorter = new LockInternalsSorter()
     {
         @Override
         public String fixForSorting(String str, String lockName)
         {
+            //
             return StandardLockInternalsDriver.standardFixForSorting(str, lockName);
         }
     };
@@ -107,11 +148,15 @@ public class LeaderLatch implements Closeable
     public enum CloseMode
     {
         /**
+         * 静悄悄的关闭 -> 当选举锁关闭时，不通知监听器。
+         *
          * When the latch is closed, listeners will *not* be notified (default behavior)
          */
         SILENT,
 
         /**
+         * 通知leader -> 当选举锁关闭时，如果当前是leader，那么在关闭时会通知监听器。
+         *
          * When the latch is closed, listeners *will* be notified
          */
         NOTIFY_LEADER
@@ -221,6 +266,7 @@ public class LeaderLatch implements Closeable
             {
             case NOTIFY_LEADER:
             {
+                // 如果需要通知监听器 - 先更新状态（触发通知），再清空监听器。
                 setLeadership(false);
                 listeners.clear();
                 break;
@@ -228,6 +274,7 @@ public class LeaderLatch implements Closeable
 
             default:
             {
+                // 如果不需要通知监听器 - 先清空监听器，再更新状态（不会触发通知）。
                 listeners.clear();
                 setLeadership(false);
                 break;
@@ -626,12 +673,17 @@ public class LeaderLatch implements Closeable
         }
     }
 
+    /**
+     * 设置leader状态
+     */
     private synchronized void setLeadership(boolean newValue)
     {
         boolean oldValue = hasLeadership.getAndSet(newValue);
 
         if ( oldValue && !newValue )
-        { // Lost leadership, was true, now false
+        {
+            // true -> false，表示失去leader，成为了follower
+            // Lost leadership, was true, now false
             listeners.forEach(new Function<LeaderLatchListener, Void>()
                 {
                     @Override
@@ -643,7 +695,9 @@ public class LeaderLatch implements Closeable
                 });
         }
         else if ( !oldValue && newValue )
-        { // Gained leadership, was false, now true
+        {
+            // false -> true，表示有follower成为leader
+            // Gained leadership, was false, now true
             listeners.forEach(new Function<LeaderLatchListener, Void>()
                 {
                     @Override
@@ -654,7 +708,7 @@ public class LeaderLatch implements Closeable
                     }
                 });
         }
-
+        // 通知在该对象上等待成为leader的线程。
         notifyAll();
     }
 
