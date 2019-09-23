@@ -87,6 +87,7 @@ public class InterProcessSemaphoreMutex implements InterProcessLock
     {
         Lease lease = this.lease;
         // 这个检测并不能保证安全性，如果错误的线程调用了release，后续的代码将可能造成错误
+        // 最好进行数据隔离
         Preconditions.checkState(lease != null, "Not acquired");
         this.lease = null;
         // close必须在 lease = null 之后

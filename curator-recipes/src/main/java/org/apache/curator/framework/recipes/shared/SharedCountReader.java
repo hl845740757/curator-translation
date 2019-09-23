@@ -21,11 +21,15 @@ package org.apache.curator.framework.recipes.shared;
 import org.apache.curator.framework.listen.Listenable;
 
 /**
+ * 一个抽象的int计数器，并且允许监听它的值改变。
+ *
  * Abstracts a shared integer and allows listening for changes to its value
  */
 public interface SharedCountReader extends Listenable<SharedCountListener>
 {
     /**
+     * 获取最新计数
+     *
      * Return the current value of the count
      *
      * @return count
@@ -33,6 +37,8 @@ public interface SharedCountReader extends Listenable<SharedCountListener>
     public int      getCount();
 
     /**
+     * 获取最新计数和版本号
+     *
      * Return the current count and version
      *
      * @return count and version
