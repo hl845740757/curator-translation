@@ -27,7 +27,7 @@ package org.apache.curator.framework.recipes.leader;
 public class Participant
 {
     /**
-     * 参与者的唯一id - 应该是它的节点名字
+     * 参与者的唯一id（用户指定的）
      */
     private final String        id;
     /**

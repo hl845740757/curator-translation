@@ -58,6 +58,8 @@ import org.apache.curator.utils.PathUtils;
  * 在连接到ZooKeeper集群的一组JMV中的多个竞争者中选择“leader”的抽象。
  * 如果一个由n个线程/进程组成的组争夺领导权，则将随机指派一个线程/进程作为领导，
  * 直到它释放领导权，此时将随机从该组中选择另一个线程/进程作为leader。 -- 本质是抢占节点，创建一个临时节点，节点过期则重新选举
+ * <p>
+ * 这个类的复杂度有点超过了我的预期... 我觉得这个复杂度的提升主要来自于连接状态管理。
  *
  * <p>
  * Abstraction to select a "leader" amongst multiple contenders in a group of JMVs connected to
@@ -83,11 +85,11 @@ public class LeaderLatch implements Closeable
      */
     private final AtomicReference<State> state = new AtomicReference<State>(State.LATENT);
     /**
-     * 当前是否是leader
+     * 当前是否是leader - 这是一个缓存值
      */
     private final AtomicBoolean hasLeadership = new AtomicBoolean(false);
     /**
-     * 作为参与者的路径
+     * 作为参与者的路径 - 临时顺序节点，在放弃leader的时候回重创建
      */
     private final AtomicReference<String> ourPath = new AtomicReference<String>();
     /**
@@ -184,8 +186,11 @@ public class LeaderLatch implements Closeable
     /**
      * @param client    the client
      * @param latchPath the path for this leadership group
+     *                  选举路径
      * @param id        participant ID
+     *                  参与者id - 每一个参与者必须有一个唯一的id
      * @param closeMode behaviour of listener on explicit close.
+     *                  关闭时触发的监听器动作
      */
     public LeaderLatch(CuratorFramework client, String latchPath, String id, CloseMode closeMode)
     {
@@ -196,6 +201,8 @@ public class LeaderLatch implements Closeable
     }
 
     /**
+     * 把当前实例添加到leader选举中，并尝试申请领导权。
+     *
      * Add this instance to the leadership election and attempt to acquire leadership.
      *
      * @throws Exception errors
@@ -203,7 +210,7 @@ public class LeaderLatch implements Closeable
     public void start() throws Exception
     {
         Preconditions.checkState(state.compareAndSet(State.LATENT, State.STARTED), "Cannot be started more than once");
-
+        // 在连接建立成功之后执行
         startTask.set(AfterConnectionEstablished.execute(client, new Runnable()
                 {
                     @Override
@@ -283,6 +290,9 @@ public class LeaderLatch implements Closeable
         }
     }
 
+    /**
+     * 取消{@link #startTask}，通过future取消
+     */
     @VisibleForTesting
     protected boolean cancelStartTask()
     {
@@ -341,6 +351,9 @@ public class LeaderLatch implements Closeable
     }
 
     /**
+     * 使当前线程阻塞等待当前实例成为leader，直到申请成功或被中断或当前实例被关闭。
+     * 如果当前线程已经是leader，那么该方法将立即返回。
+     *
      * <p>Causes the current thread to wait until this instance acquires leadership
      * unless the thread is {@linkplain Thread#interrupt interrupted} or {@linkplain #close() closed}.</p>
      * <p>If this instance already is the leader then this method returns immediately.</p>
@@ -371,6 +384,7 @@ public class LeaderLatch implements Closeable
     {
         synchronized(this)
         {
+            // 一直等待，直到锁可用
             while ( (state.get() == State.STARTED) && !hasLeadership.get() )
             {
                 wait();
@@ -378,11 +392,15 @@ public class LeaderLatch implements Closeable
         }
         if ( state.get() != State.STARTED )
         {
+            // 这个异常真的是.....
             throw new EOFException();
         }
     }
 
     /**
+     * 使当前线程阻塞等待当前实例成为leader，直到申请成功或 被中断 或 指定的时间过去(超时) 或 当前实例被关闭。
+     * 如果当前线程已经是leader，那么该方法将立即返回。
+     *
      * <p>Causes the current thread to wait until this instance acquires leadership
      * unless the thread is {@linkplain Thread#interrupt interrupted},
      * the specified waiting time elapses or the instance is {@linkplain #close() closed}.</p>
@@ -426,6 +444,7 @@ public class LeaderLatch implements Closeable
 
         synchronized(this)
         {
+            // 时间足够且还未成为leader的情况下继续等待
             while ( (waitNanos > 0) && (state.get() == State.STARTED) && !hasLeadership.get() )
             {
                 long startNanos = System.nanoTime();
@@ -434,6 +453,7 @@ public class LeaderLatch implements Closeable
                 waitNanos -= elapsed;
             }
         }
+        // 最后再进行一次尝试
         return hasLeadership();
     }
 
@@ -461,6 +481,10 @@ public class LeaderLatch implements Closeable
     }
 
     /**
+     * 获取参与选举的用户信息。
+     * 注意：该方法字节从zookeeper中拉取数据。因此其返回值可能和{@link #hasLeadership()}并不一致，
+     * 因为{@link #hasLeadership()}使用的是本地变量。
+     *
      * <p>
      * Returns the set of current participants in the leader selection
      * </p>
@@ -481,6 +505,11 @@ public class LeaderLatch implements Closeable
     }
 
     /**
+     * 获取当前的leader信息。
+     * 如果由于某种原因，这里不存在一个leader，将返回一个假的参与者信息。
+     * <b>注意</b> - 该方法直接查询zookeeper服务器，因此其返回值可能和{@link #hasLeadership()}并不匹配，
+     * 因为{@link #hasLeadership()}使用的是本地变量。
+     *
      * <p>
      * Return the id for the current leader. If for some reason there is no
      * current leader, a dummy participant is returned.
@@ -502,21 +531,27 @@ public class LeaderLatch implements Closeable
     }
 
     /**
+     * 查询当前是否是leader。
      * Return true if leadership is currently held by this instance
      *
      * @return true/false
      */
     public boolean hasLeadership()
     {
+        // 查询的是缓存值
         return (state.get() == State.STARTED) && hasLeadership.get();
     }
 
     @VisibleForTesting
     volatile CountDownLatch debugResetWaitLatch = null;
 
+    /**
+     * 重置选举状态 - 只有当确定不是leader的时候才应该调用
+     */
     @VisibleForTesting
     void reset() throws Exception
     {
+        // 取消leader，删除本地信息，重新创建节点参与leader选举
         setLeadership(false);
         setNode(null);
 
@@ -527,6 +562,7 @@ public class LeaderLatch implements Closeable
             {
                 if ( debugResetWaitLatch != null )
                 {
+                    // 等待测试组件执行
                     debugResetWaitLatch.await();
                     debugResetWaitLatch = null;
                 }
@@ -549,16 +585,22 @@ public class LeaderLatch implements Closeable
                 }
             }
         };
+        // 重新创建节点
         client.create().creatingParentContainersIfNeeded().withProtection().withMode(CreateMode.EPHEMERAL_SEQUENTIAL).inBackground(callback).forPath(ZKPaths.makePath(latchPath, LOCK_NAME), LeaderSelector.getIdBytes(id));
     }
 
+    /**
+     * 真正的启动逻辑 - 该方法和{@link #close()}有竞争关系，因此都是加锁的。
+     */
     private synchronized void internalStart()
     {
         if ( state.get() == State.STARTED )
         {
+            // 添加连接监听器
             client.getConnectionStateListenable().addListener(listener);
             try
             {
+                // 初始化节点状态
                 reset();
             }
             catch ( Exception e )
@@ -569,6 +611,9 @@ public class LeaderLatch implements Closeable
         }
     }
 
+    /**
+     * 检查当前实例是否是leader
+     */
     private void checkLeadership(List<String> children) throws Exception
     {
         final String localOurPath = ourPath.get();
@@ -576,15 +621,18 @@ public class LeaderLatch implements Closeable
         int ourIndex = (localOurPath != null) ? sortedChildren.indexOf(ZKPaths.getNodeFromPath(localOurPath)) : -1;
         if ( ourIndex < 0 )
         {
+            // 找不到自己创建的节点 - 调用了reset/close 或 出现意料之外的错误
             log.error("Can't find our node. Resetting. Index: " + ourIndex);
             reset();
         }
         else if ( ourIndex == 0 )
         {
+            // 我的节点排在第一位，我就是leader
             setLeadership(true);
         }
         else
         {
+            // 我不是leader，那么我只需要检测我前面一位的删除事件
             String watchPath = sortedChildren.get(ourIndex - 1);
             Watcher watcher = new Watcher()
             {
@@ -595,6 +643,7 @@ public class LeaderLatch implements Closeable
                     {
                         try
                         {
+                            // 检测到前一位删除事件的时候，再次检查我是不是leader
                             getChildren();
                         }
                         catch ( Exception ex )
@@ -605,7 +654,7 @@ public class LeaderLatch implements Closeable
                     }
                 }
             };
-
+            // 拉取数据的回调逻辑
             BackgroundCallback callback = new BackgroundCallback()
             {
                 @Override
@@ -618,11 +667,17 @@ public class LeaderLatch implements Closeable
                     }
                 }
             };
+            // 使用 getData() 而不是 exist() 是为了避免留下不必要的观察者，这是一种资源/内存泄漏。
+            // 我的理解是这样的：
+            // exist 会在节点 创建、删除、改变的时候产生事件， 而getData会在节点 删除、改变的时候产生事件，节点不存在的时候watcher不生效。
             // use getData() instead of exists() to avoid leaving unneeded watchers which is a type of resource leak
             client.getData().usingWatcher(watcher).inBackground(callback).forPath(ZKPaths.makePath(latchPath, watchPath));
         }
     }
 
+    /**
+     * 后台拉取所有参与者信息
+     */
     private void getChildren() throws Exception
     {
         BackgroundCallback callback = new BackgroundCallback()
@@ -632,6 +687,7 @@ public class LeaderLatch implements Closeable
             {
                 if ( event.getResultCode() == KeeperException.Code.OK.intValue() )
                 {
+                    // 拉取成功，检查是否是leader - 我系不系排第一
                     checkLeadership(event.getChildren());
                 }
             }
@@ -639,6 +695,10 @@ public class LeaderLatch implements Closeable
         client.getChildren().inBackground(callback).forPath(ZKPaths.makePath(latchPath, null));
     }
 
+    /**
+     * 处理连接状态改变事件
+     * @param newState 最新连接状态
+     */
     private void handleStateChange(ConnectionState newState)
     {
         switch ( newState )
@@ -717,6 +777,7 @@ public class LeaderLatch implements Closeable
         String oldPath = ourPath.getAndSet(newValue);
         if ( oldPath != null )
         {
+            // guaranteed - 确保一定删除，否则一旦存在该会话的无效节点，将导致严重错误。
             client.delete().guaranteed().inBackground().forPath(oldPath);
         }
     }
