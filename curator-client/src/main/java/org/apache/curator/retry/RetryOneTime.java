@@ -19,6 +19,8 @@
 package org.apache.curator.retry;
 
 /**
+ * 仅仅重试一次的策略
+ *
  * A retry policy that retries only once
  */
 public class RetryOneTime extends RetryNTimes

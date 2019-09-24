@@ -19,10 +19,18 @@
 package org.apache.curator.retry;
 
 /**
+ * 重试指定次数的策略。
+ * 两种特殊的情况：
+ * 只能重试0次 - 即不允许重试。
+ * 只能重试1次。
+ *
  * Retry policy that retries a max number of times
  */
 public class RetryNTimes extends SleepingRetry
 {
+    /**
+     * 两次重试期间的睡眠时间
+     */
     private final int sleepMsBetweenRetries;
 
     public RetryNTimes(int n, int sleepMsBetweenRetries)

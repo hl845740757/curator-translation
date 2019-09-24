@@ -21,6 +21,8 @@ package org.apache.curator.x.discovery.details;
 import org.apache.curator.x.discovery.ServiceInstance;
 
 /**
+ * 服务实例序列化器 - 序列化和反序列化视野服务实例。
+ *
  * Injectable serializer for service instances
  */
 public interface InstanceSerializer<T>

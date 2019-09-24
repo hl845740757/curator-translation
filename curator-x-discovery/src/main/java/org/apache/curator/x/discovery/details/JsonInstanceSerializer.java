@@ -24,6 +24,8 @@ import org.codehaus.jackson.type.JavaType;
 import java.io.ByteArrayOutputStream;
 
 /**
+ * 使用JACKSON序列化和反序列化服务实例对象。
+ *
  * A serializer that uses Jackson to serialize/deserialize as JSON. IMPORTANT: The instance
  * payload must support Jackson
  */
