@@ -18,9 +18,19 @@
  */
 package org.apache.curator.framework.recipes.locks;
 
+/**
+ * 锁撤销操作监听器
+ * @param <T>
+ */
 public interface RevocationListener<T>
 {
     /**
+     * 请求撤销锁(请求释放锁)。
+     * 当收到一个撤销锁的请求时，该方法会被调用。当收到该请求时，你应该尽快释放锁。
+     *
+     * 注意：撤销是一种协作机制。
+     * 它意味着：不能强制对方释放锁，只是发起一个请求，由锁的拥有者决定是否响应请求以及何时响应请求 (可以参考中断)。
+     *
      * Called when a revocation request has been received. You should release the lock as soon
      * as possible. Revocation is cooperative.
      *

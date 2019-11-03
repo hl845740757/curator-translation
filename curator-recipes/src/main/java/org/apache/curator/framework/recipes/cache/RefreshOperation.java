@@ -18,9 +18,19 @@
  */
 package org.apache.curator.framework.recipes.cache;
 
+/**
+ * 刷新操作（查看节点当前最新的子节点）
+ */
 class RefreshOperation implements Operation
 {
+    /**
+     * 操作(命令)的接收者，真正执行逻辑的对象。
+     */
     private final PathChildrenCache cache;
+
+    /**
+     * 刷新模式
+     */
     private final PathChildrenCache.RefreshMode mode;
 
     RefreshOperation(PathChildrenCache cache, PathChildrenCache.RefreshMode mode)

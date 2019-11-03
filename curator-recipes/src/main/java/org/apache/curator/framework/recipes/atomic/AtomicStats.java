@@ -19,16 +19,35 @@
 package org.apache.curator.framework.recipes.atomic;
 
 /**
+ * 用于debug追踪操作的状态/信息；
+ *
  * Debugging stats about operations
  */
 public class AtomicStats
 {
+    /**
+     * 乐观锁的尝试次数；
+     * 在zookeeper中，乐观锁即 带版本号的操作，只有版本号一致的时候才可以操作数据；
+     * eg:{@link org.apache.curator.framework.api.SetDataBuilder#withVersion(int)}
+     */
     private int     optimisticTries = 0;
+    /**
+     * 互斥锁尝试次数；
+     * 在zookeeper中，互斥锁本质为抢占节点控制权，实现互斥知道的有两种
+     * 1.创建临时节点成功获得锁
+     * 2.成为第一个临时顺序节点时获得锁
+     * 只有拥有控制权的客户端可以操作数据；
+     * eg:{@link org.apache.curator.framework.recipes.locks.InterProcessMutex}
+     */
     private int     promotedLockTries = 0;
+    /** 乐观锁成功时消耗的时间(毫秒) */
     private long    optimisticTimeMs = 0;
+    /** 互斥锁成功时消耗的时间(毫秒) */
     private long    promotedTimeMs = 0;
 
     /**
+     * 返回乐观锁的尝试次数。
+     *
      * Returns the number of optimistic locks used to perform the operation
      *
      * @return qty
@@ -39,6 +58,8 @@ public class AtomicStats
     }
 
     /**
+     * 返回互斥锁的尝试次数。
+     *
      * Returns the number of mutex locks used to perform the operation
      *
      * @return qty
@@ -49,6 +70,8 @@ public class AtomicStats
     }
 
     /**
+     * 返回乐观锁成功时花费的时间(毫秒)。
+     *
      * Returns the time spent trying the operation with optimistic locks
      *
      * @return time in ms
@@ -59,6 +82,7 @@ public class AtomicStats
     }
 
     /**
+     * 返回互斥锁成功时花费的时间(毫秒)。
      * Returns the time spent trying the operation with mutex locks
      *
      * @return time in ms

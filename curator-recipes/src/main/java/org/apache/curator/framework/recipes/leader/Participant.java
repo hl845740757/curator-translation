@@ -19,12 +19,20 @@
 package org.apache.curator.framework.recipes.leader;
 
 /**
+ * 表示leader选举中的一个参与者。
+ *
  * Describes a participant in a leadership selection
  */
 @SuppressWarnings({"RedundantIfStatement"})
 public class Participant
 {
+    /**
+     * 参与者的唯一id（用户指定的）
+     */
     private final String        id;
+    /**
+     * 是否是leader
+     */
     private final boolean       isLeader;
 
     /**

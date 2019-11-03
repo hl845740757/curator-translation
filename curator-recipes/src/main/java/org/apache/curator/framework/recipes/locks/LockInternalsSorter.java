@@ -18,7 +18,18 @@
  */
 package org.apache.curator.framework.recipes.locks;
 
+/**
+ * 互斥锁排序器
+ */
 public interface LockInternalsSorter
 {
+    /**
+     * 获取锁节点用于排序的字符串。 ---> 截断无用部分
+     * lock-000001  -> 000001
+     *
+     * @param str ourPath
+     * @param lockName  锁节点的路径
+     * @return 用于排序的字符串。
+     */
     public String           fixForSorting(String str, String lockName);
 }

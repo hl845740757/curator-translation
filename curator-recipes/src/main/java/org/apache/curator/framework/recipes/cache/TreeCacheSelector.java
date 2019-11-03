@@ -19,6 +19,10 @@
 package org.apache.curator.framework.recipes.cache;
 
 /**
+ * 控制TreeCache中的节点的处理。
+ * 当尝试遍历一个节点的子节点时，仅当对该节点调用{@link #traverseChildren(String)}返回true时，才会查询该节点的子节点。
+ * 当尝试缓存该节点的某个子节点时，仅当对子节点调用{@link #acceptChild(String)}返回true时，才会缓存该子节点。
+ * （建议大家测试一下就知道了，文字稍微有点绕）
  * <p>
  *     Controls which nodes a TreeCache processes. When iterating
  *     over the children of a parent node, a given node's children are
@@ -47,6 +51,9 @@ package org.apache.curator.framework.recipes.cache;
 public interface TreeCacheSelector
 {
     /**
+     * 确定是否需要便利该节点下的子节点（非叶子节点，包含根节点）。
+     *（根节点就是第一个parent）
+     *
      * Return true if children of this path should be cached.
      * i.e. if false is returned, this node is not queried to
      * determine if it has children or not
@@ -57,9 +64,13 @@ public interface TreeCacheSelector
     boolean traverseChildren(String fullPath);
 
     /**
+     * 判断该节点是否需要缓存
+     * （叶子节点和非叶子节点都会测试，不含根节点）
+     * （任何一个节点都是根节点的子节点）
+     *
      * Return true if this node should be returned from the cache
      *
-     * @param fullPath full path of the ZNode
+     * @param fullPath full path of the ZNode 子节点的全路径
      * @return true/false
      */
     boolean acceptChild(String fullPath);

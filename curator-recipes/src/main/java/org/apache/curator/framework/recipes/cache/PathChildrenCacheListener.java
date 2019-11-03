@@ -21,15 +21,24 @@ package org.apache.curator.framework.recipes.cache;
 import org.apache.curator.framework.CuratorFramework;
 
 /**
+ * {@link PathChildrenCache}上的事件监听器，当{@link PathChildrenCache}的状态发生改变时，监听器将会收到通知。
+ *
  * Listener for PathChildrenCache changes
  */
 public interface PathChildrenCacheListener
 {
     /**
+     * 当事件产生时该方法将会被调用。
+     * 调用该方法的线程是{@code PathChildrenCache#executorService}调用的。
+     * 再次注意：这里是异步调用。事件可能是旧事件，而{@link PathChildrenCache}中的数据是新数据。
+     *
+     * Q:为什么该方法由参数？而{@link NodeCacheListener#nodeChanged()}没有参数？
+     * A:请注意查看{@link PathChildrenCacheEvent}的类注释。
+     *
      * Called when a change has occurred
      *
-     * @param client the client
-     * @param event describes the change
+     * @param client the client curator客户端
+     * @param event describes the change 事件对应的数据
      * @throws Exception errors
      */
     public void     childEvent(CuratorFramework client, PathChildrenCacheEvent event) throws Exception;

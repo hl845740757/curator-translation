@@ -21,12 +21,16 @@ package org.apache.curator.framework.listen;
 import java.util.concurrent.Executor;
 
 /**
+ * 监听器及其执行器的通用持有者POJO
+ *
  * Generic holder POJO for a listener and its executor
  * @param <T> the listener type
  */
 public class ListenerEntry<T>
 {
+    /** 持有的listener */
     public final T        listener;
+    /** 该listener对应的executor，该executor用于处理产生的事件。 */
     public final Executor executor;
 
     public ListenerEntry(T listener, Executor executor)

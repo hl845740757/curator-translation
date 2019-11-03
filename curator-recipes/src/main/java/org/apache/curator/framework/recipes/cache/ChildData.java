@@ -22,10 +22,22 @@ import org.apache.zookeeper.data.Stat;
 import java.util.Arrays;
 import org.apache.curator.utils.PathUtils;
 
+/**
+ * 表示zookeeper中一个节点的数据
+ */
 public class ChildData implements Comparable<ChildData>
 {
+    /**
+     * zkPath (fullPath)
+     */
     private final String path;
+    /**
+     * 节点状态，包含版本号等
+     */
     private final Stat stat;
+    /**
+     * 节点对应的数据，在拉取到数据之前为null
+     */
     private final byte[] data;
 
     public ChildData(String path, Stat stat, byte[] data)
@@ -51,7 +63,7 @@ public class ChildData implements Comparable<ChildData>
         {
             return -1;
         }
-
+        // 按照节点path排序
         return path.compareTo(rhs.path);
     }
 

@@ -21,6 +21,9 @@ package org.apache.curator.retry;
 import com.google.common.annotations.VisibleForTesting;
 
 /**
+ * 这个类其实已经没有意义了。
+ * 这里本就可以指定最大睡眠时间{@link ExponentialBackoffRetry#ExponentialBackoffRetry(int, int, int)}
+ *
  * Retry policy that retries a set number of times with an increasing (up to a maximum bound) sleep time between retries
  */
 public class BoundedExponentialBackoffRetry extends ExponentialBackoffRetry

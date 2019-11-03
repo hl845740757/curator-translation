@@ -26,10 +26,15 @@ import org.apache.curator.x.discovery.details.InstanceProvider;
 public interface ProviderStrategy<T>
 {
     /**
+     * 给定一组实例，返回其中的一个实例。
+     *
      * Given a source of instances, return one of them for a single use.
      *
      * @param instanceProvider the instance provider
+     *                         使用provider可以减少不必要的消耗，可以延迟创建动作，因为策略不一定需要获取所有的实例。
+     *                         (这是函数式编程的好处)
      * @return the instance to use
+     *                         用于提供服务的实例
      * @throws Exception any errors
      */
     public ServiceInstance<T>       getInstance(InstanceProvider<T> instanceProvider) throws Exception;

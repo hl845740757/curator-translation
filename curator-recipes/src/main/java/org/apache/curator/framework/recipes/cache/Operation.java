@@ -18,7 +18,18 @@
  */
 package org.apache.curator.framework.recipes.cache;
 
+import java.util.concurrent.ExecutorService;
+
+/**
+ * 操作（命令）
+ * （设计模式之命令模式，命令模式的最简单的运用就是支持排队允许异步执行）
+ */
 interface Operation
 {
+    /**
+     * 执行操作。
+     * 该方法由{@link PathChildrenCache}关联的单线程的{@link ExecutorService}执行。
+     * @throws Exception zookeeper errors
+     */
     public void     invoke() throws Exception;
 }
