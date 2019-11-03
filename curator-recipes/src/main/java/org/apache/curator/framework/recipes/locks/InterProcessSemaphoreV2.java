@@ -22,15 +22,16 @@ package org.apache.curator.framework.recipes.locks;
 import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Sets;
-
-import org.apache.curator.utils.CloseableUtils;
 import org.apache.curator.RetryLoop;
 import org.apache.curator.framework.CuratorFramework;
+import org.apache.curator.framework.WatcherRemoveCuratorFramework;
 import org.apache.curator.framework.api.PathAndBytesable;
 import org.apache.curator.framework.imps.CuratorFrameworkState;
 import org.apache.curator.framework.recipes.shared.SharedCountListener;
 import org.apache.curator.framework.recipes.shared.SharedCountReader;
 import org.apache.curator.framework.state.ConnectionState;
+import org.apache.curator.utils.CloseableUtils;
+import org.apache.curator.utils.PathUtils;
 import org.apache.curator.utils.ThreadUtils;
 import org.apache.curator.utils.ZKPaths;
 import org.apache.zookeeper.CreateMode;
@@ -46,26 +47,9 @@ import java.util.List;
 import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
-import org.apache.curator.utils.PathUtils;
 
 /**
- * 一个跨JVM工作的计数信号量。
- * 所有jvm中使用相同锁路径的所有进程将实现进程间有限的租约集。 - 其实就是说必须是相同的所路径。
- * 此外，这个信号量基本上是“公平的”——每个用户将按照请求的顺序（从zk的角度）获得一个租约。 - 其实就是说，创建的节点是临时有序节点。
  * <p>
- * 有两种模式可用于确定信号量的最大租约。
- * 在第一种模式中，max lease是由给定路径的用户维护的约定。 - 客户端指定最大租约/资源数，也就必须得保证所有客户端传入的参数是一致的。
- * 在第二种模式中，{@link SharedCountReader}用作给定路径的信号量的方法，以确定最大租约。 - 在另外一个节点保存了一个值，也就是使用两个路径进行保护。
- * </p>
- * <p>
- * 如果没有使用{@link SharedCountReader}，将没有进行内部检查，以防止进程A认为有10个租约，进程B认为有20个租约。
- * 因此，请确保所有进程中的所有实例都使用相同的numberOfLeases值。
- * </p>
- * 各种返回{@link Lease}的方法，{@link Lease}表示申请到的资源。
- * 客户端必须关闭lease对象（最好是在finally块中），否则租约将丢失。
- * 但是，如果客户端会话中断（崩溃等），则客户端持有的任何租约将自动关闭，并可供其他客户端使用。
- *
- *  <p>
  * A counting semaphore that works across JVMs. All processes
  * in all JVMs that use the same lock path will achieve an inter-process limited set of leases.
  * Further, this semaphore is mostly "fair" - each user will get a lease in the order requested
@@ -96,14 +80,14 @@ public class InterProcessSemaphoreV2
 {
     private final Logger log = LoggerFactory.getLogger(getClass());
     private final InterProcessMutex lock;
-    private final CuratorFramework client;
+    private final WatcherRemoveCuratorFramework client;
     private final String leasesPath;
     private final Watcher watcher = new Watcher()
     {
         @Override
         public void process(WatchedEvent event)
         {
-            notifyFromWatcher();
+            client.postSafeNotify(InterProcessSemaphoreV2.this);
         }
     };
 
@@ -121,7 +105,7 @@ public class InterProcessSemaphoreV2
     /**
      * @param client    the client
      * @param path      path for the semaphore
-     * @param maxLeases the max number of leases to allow for this instance 客户端指定租约数
+     * @param maxLeases the max number of leases to allow for this instance
      */
     public InterProcessSemaphoreV2(CuratorFramework client, String path, int maxLeases)
     {
@@ -140,7 +124,7 @@ public class InterProcessSemaphoreV2
 
     private InterProcessSemaphoreV2(CuratorFramework client, String path, int maxLeases, SharedCountReader count)
     {
-        this.client = client;
+        this.client = client.newWatcherRemoveCuratorFramework();
         path = PathUtils.validatePath(path);
         lock = new InterProcessMutex(client, ZKPaths.makePath(path, LOCK_PARENT));
         this.maxLeases = (count != null) ? count.getCount() : maxLeases;
@@ -156,7 +140,7 @@ public class InterProcessSemaphoreV2
                         public void countHasChanged(SharedCountReader sharedCount, int newCount) throws Exception
                         {
                             InterProcessSemaphoreV2.this.maxLeases = newCount;
-                            notifyFromWatcher();
+                            client.postSafeNotify(InterProcessSemaphoreV2.this);
                         }
 
                         @Override
@@ -346,6 +330,7 @@ public class InterProcessSemaphoreV2
 
     static volatile CountDownLatch debugAcquireLatch = null;
     static volatile CountDownLatch debugFailedGetChildrenLatch = null;
+    volatile CountDownLatch debugWaitLatch = null;
 
     private InternalAcquireResult internalAcquire1Lease(ImmutableList.Builder<Lease> builder, long startMs, boolean hasWait, long waitMs) throws Exception
     {
@@ -368,6 +353,7 @@ public class InterProcessSemaphoreV2
         }
 
         Lease lease = null;
+        boolean success = false;
 
         try
         {
@@ -381,50 +367,67 @@ public class InterProcessSemaphoreV2
                 debugAcquireLatch.await();
             }
 
-            synchronized(this)
+            try
             {
-                for(;;)
+                synchronized(this)
                 {
-                    List<String> children;
-                    try
+                    for(;;)
                     {
-                        children = client.getChildren().usingWatcher(watcher).forPath(leasesPath);
-                    }
-                    catch ( Exception e )
-                    {
-                        if ( debugFailedGetChildrenLatch != null )
+                        List<String> children;
+                        try
                         {
-                            debugFailedGetChildrenLatch.countDown();
+                            children = client.getChildren().usingWatcher(watcher).forPath(leasesPath);
                         }
-                        returnLease(lease); // otherwise the just created ZNode will be orphaned causing a dead lock
-                        throw e;
-                    }
-                    if ( !children.contains(nodeName) )
-                    {
-                        log.error("Sequential path not found: " + path);
-                        returnLease(lease);
-                        return InternalAcquireResult.RETRY_DUE_TO_MISSING_NODE;
-                    }
+                        catch ( Exception e )
+                        {
+                            if ( debugFailedGetChildrenLatch != null )
+                            {
+                                debugFailedGetChildrenLatch.countDown();
+                            }
+                            throw e;
+                        }
+                        if ( !children.contains(nodeName) )
+                        {
+                            log.error("Sequential path not found: " + path);
+                            return InternalAcquireResult.RETRY_DUE_TO_MISSING_NODE;
+                        }
 
-                    if ( children.size() <= maxLeases )
-                    {
-                        break;
-                    }
-                    if ( hasWait )
-                    {
-                        long thisWaitMs = getThisWaitMs(startMs, waitMs);
-                        if ( thisWaitMs <= 0 )
+                        if ( children.size() <= maxLeases )
                         {
-                            returnLease(lease);
-                            return InternalAcquireResult.RETURN_NULL;
+                            break;
                         }
-                        wait(thisWaitMs);
+                        if ( hasWait )
+                        {
+                            long thisWaitMs = getThisWaitMs(startMs, waitMs);
+                            if ( thisWaitMs <= 0 )
+                            {
+                                return InternalAcquireResult.RETURN_NULL;
+                            }
+                            if ( debugWaitLatch != null )
+                            {
+                                debugWaitLatch.countDown();
+                            }
+                            wait(thisWaitMs);
+                        }
+                        else
+                        {
+                            if ( debugWaitLatch != null )
+                            {
+                                debugWaitLatch.countDown();
+                            }
+                            wait();
+                        }
                     }
-                    else
-                    {
-                        wait();
-                    }
+                    success = true;
                 }
+            }
+            finally
+            {
+                if ( !success )
+                {
+                    returnLease(lease);
+                }
+                client.removeWatchers();
             }
         }
         finally
@@ -474,10 +477,5 @@ public class InterProcessSemaphoreV2
                 return ZKPaths.getNodeFromPath(path);
             }
         };
-    }
-
-    private synchronized void notifyFromWatcher()
-    {
-        notifyAll();
     }
 }

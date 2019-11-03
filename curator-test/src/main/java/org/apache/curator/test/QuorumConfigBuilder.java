@@ -19,20 +19,24 @@
 
 package org.apache.curator.test;
 
+import com.google.common.base.Throwables;
 import com.google.common.collect.ImmutableList;
 import com.google.common.io.Files;
 import org.apache.zookeeper.server.quorum.QuorumPeerConfig;
+import java.io.Closeable;
 import java.io.File;
+import java.io.IOException;
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.Properties;
 
 @SuppressWarnings("UnusedDeclaration")
-public class QuorumConfigBuilder
+public class QuorumConfigBuilder implements Closeable
 {
     private final ImmutableList<InstanceSpec> instanceSpecs;
     private final boolean fromRandom;
+    private final File fakeConfigFile;
 
     public QuorumConfigBuilder(Collection<InstanceSpec> specs)
     {
@@ -43,6 +47,16 @@ public class QuorumConfigBuilder
     {
         fromRandom = (specs == null) || (specs.length == 0);
         instanceSpecs = fromRandom ? ImmutableList.of(InstanceSpec.newInstanceSpec()) : ImmutableList.copyOf(specs);
+        File fakeConfigFile = null;
+        try
+        {
+            fakeConfigFile = File.createTempFile("temp", "temp");
+        }
+        catch ( IOException e )
+        {
+            Throwables.propagate(e);
+        }
+        this.fakeConfigFile = fakeConfigFile;
     }
 
     public boolean isFromRandom()
@@ -68,6 +82,16 @@ public class QuorumConfigBuilder
     public int size()
     {
         return instanceSpecs.size();
+    }
+
+    @Override
+    public void close()
+    {
+        if ( fakeConfigFile != null )
+        {
+            //noinspection ResultOfMethodCallIgnored
+            fakeConfigFile.delete();
+        }
     }
 
     public QuorumPeerConfig buildConfig(int instanceIndex) throws Exception
@@ -100,7 +124,7 @@ public class QuorumConfigBuilder
         {
             for ( InstanceSpec thisSpec : instanceSpecs )
             {
-                properties.setProperty("server." + thisSpec.getServerId(), String.format("%s:%d:%d", thisSpec.getHostname(), thisSpec.getQuorumPort(), thisSpec.getElectionPort()));
+                properties.setProperty("server." + thisSpec.getServerId(), String.format("%s:%d:%d;%s:%d", thisSpec.getHostname(), thisSpec.getQuorumPort(), thisSpec.getElectionPort(), thisSpec.getHostname(), thisSpec.getPort()));
             }
         }
         Map<String,Object> customProperties = spec.getCustomProperties();
@@ -110,7 +134,15 @@ public class QuorumConfigBuilder
             }
         }
 
-        QuorumPeerConfig config = new QuorumPeerConfig();
+        QuorumPeerConfig config = new QuorumPeerConfig()
+        {
+            {
+                if ( fakeConfigFile != null )
+                {
+                    configFileStr = fakeConfigFile.getPath();
+                }
+            }
+        };
         config.parseProperties(properties);
         return config;
     }

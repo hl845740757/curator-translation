@@ -26,12 +26,13 @@ import org.apache.zookeeper.AsyncCallback;
 import org.apache.zookeeper.KeeperException;
 import org.apache.zookeeper.Watcher;
 import org.apache.zookeeper.data.Stat;
+import org.apache.zookeeper.server.DataTree;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import java.util.concurrent.Callable;
 import java.util.concurrent.Executor;
 
-class GetDataBuilderImpl implements GetDataBuilder, BackgroundOperation<String>, ErrorListenerPathable<byte[]>
+public class GetDataBuilderImpl implements GetDataBuilder, BackgroundOperation<String>, ErrorListenerPathable<byte[]>
 {
     private final Logger                log = LoggerFactory.getLogger(getClass());
     private final CuratorFrameworkImpl  client;
@@ -44,9 +45,18 @@ class GetDataBuilderImpl implements GetDataBuilder, BackgroundOperation<String>,
     {
         this.client = client;
         responseStat = null;
-        watching = new Watching();
+        watching = new Watching(client);
         backgrounding = new Backgrounding();
         decompress = false;
+    }
+
+    public GetDataBuilderImpl(CuratorFrameworkImpl client, Stat responseStat, Watcher watcher, Backgrounding backgrounding, boolean decompress)
+    {
+        this.client = client;
+        this.responseStat = responseStat;
+        this.watching = new Watching(client, watcher);
+        this.backgrounding = backgrounding;
+        this.decompress = decompress;
     }
 
     @Override
@@ -210,7 +220,7 @@ class GetDataBuilderImpl implements GetDataBuilder, BackgroundOperation<String>,
     @Override
     public BackgroundPathable<byte[]> watched()
     {
-        watching = new Watching(true);
+        watching = new Watching(client, true);
         return this;
     }
 
@@ -239,7 +249,12 @@ class GetDataBuilderImpl implements GetDataBuilder, BackgroundOperation<String>,
                 @Override
                 public void processResult(int rc, String path, Object ctx, byte[] data, Stat stat)
                 {
-                    trace.setReturnCode(rc).setResponseBytesLength(data).setPath(path).setWithWatcher(watching.getWatcher() != null).setStat(stat).commit();
+                    watching.commitWatcher(rc, false);
+                    trace.setReturnCode(rc).setResponseBytesLength(data).setPath(path).setWithWatcher(watching.hasWatcher()).setStat(stat).commit();
+                    if ( (responseStat != null) && (stat != null) )
+                    {
+                        DataTree.copyStat(stat, responseStat);
+                    }
                     if ( decompress && (data != null) )
                     {
                         try
@@ -253,7 +268,7 @@ class GetDataBuilderImpl implements GetDataBuilder, BackgroundOperation<String>,
                             rc = KeeperException.Code.DATAINCONSISTENCY.intValue();
                         }
                     }
-                    CuratorEvent event = new CuratorEventImpl(client, CuratorEventType.GET_DATA, rc, path, null, ctx, stat, data, null, null, null);
+                    CuratorEvent event = new CuratorEventImpl(client, CuratorEventType.GET_DATA, rc, path, null, ctx, stat, data, null, null, null, null);
                     client.processBackgroundOperation(operationAndData, event);
                 }
             };
@@ -263,24 +278,26 @@ class GetDataBuilderImpl implements GetDataBuilder, BackgroundOperation<String>,
             }
             else
             {
-                client.getZooKeeper().getData(operationAndData.getData(), watching.getWatcher(), callback, backgrounding.getContext());
+                client.getZooKeeper().getData(operationAndData.getData(), watching.getWatcher(operationAndData.getData()), callback, backgrounding.getContext());
             }
         }
         catch ( Throwable e )
         {
-            backgrounding.checkError(e);
+            backgrounding.checkError(e, watching);
         }
     }
 
     @Override
     public byte[] forPath(String path) throws Exception
     {
+        client.getSchemaSet().getSchema(path).validateWatch(path, watching.isWatched() || watching.hasWatcher());
+
         path = client.fixForNamespace(path);
 
         byte[]      responseData = null;
         if ( backgrounding.inBackground() )
         {
-            client.processBackgroundOperation(new OperationAndData<String>(this, path, backgrounding.getCallback(), null, backgrounding.getContext()), null);
+            client.processBackgroundOperation(new OperationAndData<String>(this, path, backgrounding.getCallback(), null, backgrounding.getContext(), watching), null);
         }
         else
         {
@@ -307,13 +324,14 @@ class GetDataBuilderImpl implements GetDataBuilder, BackgroundOperation<String>,
                     }
                     else
                     {
-                        responseData = client.getZooKeeper().getData(path, watching.getWatcher(), responseStat);
+                        responseData = client.getZooKeeper().getData(path, watching.getWatcher(path), responseStat);
+                        watching.commitWatcher(KeeperException.NoNodeException.Code.OK.intValue(), false);
                     }
                     return responseData;
                 }
             }
         );
-        trace.setResponseBytesLength(responseData).setPath(path).setWithWatcher(watching.getWatcher() != null).setStat(responseStat).commit();
+        trace.setResponseBytesLength(responseData).setPath(path).setWithWatcher(watching.hasWatcher()).setStat(responseStat).commit();
 
         return decompress ? client.getCompressionProvider().decompress(path, responseData) : responseData;
     }

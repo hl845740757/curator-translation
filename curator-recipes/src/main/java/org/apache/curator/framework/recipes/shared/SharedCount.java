@@ -31,9 +31,6 @@ import java.util.Map;
 import java.util.concurrent.Executor;
 
 /**
- * 管理一个共享的int值。观察同一路径的所有客户端都将具有最新的值（基于zookeeper的正常一致性保证）。
- * 其本质就是对{@link SharedValue}的一层封装
- *
  * Manages a shared integer. All clients watching the same path will have the up-to-date
  * value of the shared integer (considering ZK's normal consistency guarantees).
  */
@@ -50,6 +47,11 @@ public class SharedCount implements Closeable, SharedCountReader, Listenable<Sha
     public SharedCount(CuratorFramework client, String path, int seedValue)
     {
         sharedValue = new SharedValue(client, path, toBytes(seedValue));
+    }
+
+    protected SharedCount(CuratorFramework client, String path, SharedValue sv)
+    {
+        sharedValue = sv;
     }
 
     @Override
@@ -117,14 +119,12 @@ public class SharedCount implements Closeable, SharedCountReader, Listenable<Sha
     @Override
     public void     addListener(SharedCountListener listener)
     {
-        // 在通知线程中执行，sameThreadExecutor就是执行通知的线程
-        addListener(listener, MoreExecutors.sameThreadExecutor());
+        addListener(listener, MoreExecutors.directExecutor());
     }
 
     @Override
     public void     addListener(final SharedCountListener listener, Executor executor)
     {
-        // 进行一层包装/适配
         SharedValueListener     valueListener = new SharedValueListener()
         {
             @Override
@@ -140,26 +140,16 @@ public class SharedCount implements Closeable, SharedCountReader, Listenable<Sha
             }
         };
         sharedValue.getListenable().addListener(valueListener, executor);
-        // 保存listener 到 valueListener的引用
         listeners.put(listener, valueListener);
     }
 
-    /**
-     * 这段代码有点不科学，讲道理应该是这样：
-     * <pre>{@code
-     *      final SharedValueListener sharedValueListener = listeners.remove(listener);
-     *      if (null != sharedValueListener) {
-     *          sharedValue.getListenable().removeListener(sharedValueListener);
-     *      }
-     * }
-     * </pre>
-     * @param listener listener to remove
-     */
     @Override
     public void     removeListener(SharedCountListener listener)
     {
-        // 不科学啊？没有真正从sharedValue的监听器移除啊？
-        listeners.remove(listener);
+        SharedValueListener valueListener = listeners.remove(listener);
+        if(valueListener != null) {
+            sharedValue.getListenable().removeListener(valueListener);
+        }
     }
 
     /**
@@ -179,7 +169,6 @@ public class SharedCount implements Closeable, SharedCountReader, Listenable<Sha
         sharedValue.close();
     }
 
-    // int到byte数组，这段代码好像看见不少次了，没有提炼吗。。
     @VisibleForTesting
     static byte[]   toBytes(int value)
     {
@@ -188,7 +177,6 @@ public class SharedCount implements Closeable, SharedCountReader, Listenable<Sha
         return bytes;
     }
 
-    // byte数组到int
     private static int      fromBytes(byte[] bytes)
     {
         return ByteBuffer.wrap(bytes).getInt();

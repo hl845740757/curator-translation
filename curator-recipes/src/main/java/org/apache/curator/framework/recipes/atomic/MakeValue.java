@@ -18,16 +18,7 @@
  */
 package org.apache.curator.framework.recipes.atomic;
 
-/**
- * 构建值；根据前一个值计算新的值。
- * （新值用于更新节点）
- */
 interface MakeValue
 {
-    /**
-     * 根据前一个值计算新的值
-     * @param previous 该节点的当前值 Nullable
-     * @return 新值
-     */
     public byte[]       makeFrom(byte[] previous);
 }

@@ -18,21 +18,19 @@
  */
 package org.apache.curator.framework.imps;
 
-import org.apache.curator.test.BaseClassForTests;
-import org.apache.curator.utils.CloseableUtils;
+import com.google.common.collect.Sets;
 import org.apache.curator.framework.CuratorFramework;
 import org.apache.curator.framework.CuratorFrameworkFactory;
 import org.apache.curator.framework.api.CuratorWatcher;
 import org.apache.curator.retry.RetryOneTime;
+import org.apache.curator.test.BaseClassForTests;
 import org.apache.curator.test.Timing;
+import org.apache.curator.utils.CloseableUtils;
 import org.apache.zookeeper.WatchedEvent;
 import org.apache.zookeeper.Watcher;
 import org.testng.Assert;
 import org.testng.annotations.Test;
-import java.util.concurrent.Callable;
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 
 public class TestWatcherIdentity extends BaseClassForTests
@@ -57,54 +55,35 @@ public class TestWatcherIdentity extends BaseClassForTests
         @Override
         public void process(WatchedEvent event)
         {
-            System.out.println("count=" + count);
             count.incrementAndGet();
         }
     }
 
     @Test
-    public void testRefExpiration() throws Exception
+    public void testSameWatcherPerZKDocs() throws Exception
     {
-        final int MAX_CHECKS = 10;
-
-        final CuratorFrameworkImpl client = (CuratorFrameworkImpl)CuratorFrameworkFactory.newClient(server.getConnectString(), new RetryOneTime(1));
+        CountZKWatcher actualWatcher = new CountZKWatcher();
+        Timing timing = new Timing();
+        CuratorFramework client = CuratorFrameworkFactory.newClient(server.getConnectString(), timing.session(), timing.connection(), new RetryOneTime(1));
         try
         {
-            Assert.assertNull(client.getNamespaceWatcherMap().get(new CountCuratorWatcher()));
+            client.start();
+            client.create().forPath("/test");
 
-            final CountDownLatch latch = new CountDownLatch(1);
-            ExecutorService service = Executors.newSingleThreadExecutor();
-            service.submit
-            (
-                new Callable<Void>()
-                {
-                    @Override
-                    public Void call() throws Exception
-                    {
-                        CountZKWatcher watcher = new CountZKWatcher();
-                        client.getNamespaceWatcherMap().getNamespaceWatcher(watcher);
-                        Assert.assertNotNull(client.getNamespaceWatcherMap().get(watcher));
-                        latch.countDown();
-                        return null;
-                    }
-                }
-            );
+            // per ZK docs, this watcher should only trigger once
+            client.checkExists().usingWatcher(actualWatcher).forPath("/test");
+            client.getData().usingWatcher(actualWatcher).forPath("/test");
 
-            latch.await();
-            service.shutdownNow();
+            client.setData().forPath("/test", "foo".getBytes());
+            client.delete().forPath("/test");
+            timing.sleepABit();
+            Assert.assertEquals(actualWatcher.count.getAndSet(0), 1);
 
-            Timing timing = new Timing();
-            for ( int i = 0; i < MAX_CHECKS; ++i )
-            {
-                Assert.assertTrue((i + 1) < MAX_CHECKS);
-                timing.sleepABit();
-
-                client.getNamespaceWatcherMap().drain();  // just to cause drainReferenceQueues() to get called
-                if ( client.getNamespaceWatcherMap().isEmpty() )
-                {
-                    break;
-                }
-            }
+            client.create().forPath("/test");
+            client.checkExists().usingWatcher(actualWatcher).forPath("/test");
+            client.delete().forPath("/test");
+            timing.sleepABit();
+            Assert.assertEquals(actualWatcher.count.get(), 1);
         }
         finally
         {
@@ -113,21 +92,57 @@ public class TestWatcherIdentity extends BaseClassForTests
     }
 
     @Test
-    public void testSimpleId()
+    public void testSameCuratorWatcherPerZKDocs() throws Exception
     {
-        CountCuratorWatcher curatorWatcher = new CountCuratorWatcher();
-        CountZKWatcher zkWatcher = new CountZKWatcher();
-        CuratorFrameworkImpl client = (CuratorFrameworkImpl)CuratorFrameworkFactory.newClient(server.getConnectString(), new RetryOneTime(1));
+        CountCuratorWatcher actualWatcher = new CountCuratorWatcher();
+        Timing timing = new Timing();
+        CuratorFramework client = CuratorFrameworkFactory.newClient(server.getConnectString(), timing.session(), timing.connection(), new RetryOneTime(1));
         try
         {
-            Assert.assertSame(client.getNamespaceWatcherMap().getNamespaceWatcher(curatorWatcher), client.getNamespaceWatcherMap().getNamespaceWatcher(curatorWatcher));
-            Assert.assertSame(client.getNamespaceWatcherMap().getNamespaceWatcher(zkWatcher), client.getNamespaceWatcherMap().getNamespaceWatcher(zkWatcher));
-            Assert.assertNotSame(client.getNamespaceWatcherMap().getNamespaceWatcher(curatorWatcher), client.getNamespaceWatcherMap().getNamespaceWatcher(zkWatcher));
+            client.start();
+            client.create().forPath("/test");
+
+            // per ZK docs, this watcher should only trigger once
+            client.checkExists().usingWatcher(actualWatcher).forPath("/test");
+            client.getData().usingWatcher(actualWatcher).forPath("/test");
+
+            client.setData().forPath("/test", "foo".getBytes());
+            client.delete().forPath("/test");
+            timing.sleepABit();
+            Assert.assertEquals(actualWatcher.count.getAndSet(0), 1);
+
+            client.create().forPath("/test");
+            client.checkExists().usingWatcher(actualWatcher).forPath("/test");
+            client.delete().forPath("/test");
+            timing.sleepABit();
+            Assert.assertEquals(actualWatcher.count.get(), 1);
         }
         finally
         {
             CloseableUtils.closeQuietly(client);
         }
+    }
+
+    @Test
+    public void testSetAddition()
+    {
+        Watcher watcher = new Watcher()
+        {
+            @Override
+            public void process(WatchedEvent event)
+            {
+
+            }
+        };
+        NamespaceWatcher namespaceWatcher1 = new NamespaceWatcher(null, watcher, "/foo");
+        NamespaceWatcher namespaceWatcher2 = new NamespaceWatcher(null, watcher, "/foo");
+        Assert.assertEquals(namespaceWatcher1, namespaceWatcher2);
+        Assert.assertFalse(namespaceWatcher1.equals(watcher));
+        Assert.assertFalse(watcher.equals(namespaceWatcher1));
+        Set<Watcher> set = Sets.newHashSet();
+        set.add(namespaceWatcher1);
+        set.add(namespaceWatcher2);
+        Assert.assertEquals(set.size(), 1);
     }
 
     @Test

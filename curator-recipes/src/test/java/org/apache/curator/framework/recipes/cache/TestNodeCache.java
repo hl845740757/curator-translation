@@ -18,14 +18,16 @@
  */
 package org.apache.curator.framework.recipes.cache;
 
+import org.apache.curator.framework.imps.TestCleanState;
 import org.apache.curator.test.BaseClassForTests;
+import org.apache.curator.test.compatibility.Timing2;
 import org.apache.curator.utils.CloseableUtils;
 import org.apache.curator.framework.CuratorFramework;
 import org.apache.curator.framework.CuratorFrameworkFactory;
 import org.apache.curator.framework.api.UnhandledErrorListener;
 import org.apache.curator.retry.RetryOneTime;
-import org.apache.curator.test.KillSession;
 import org.apache.curator.test.Timing;
+import org.apache.curator.utils.Compatibility;
 import org.testng.Assert;
 import org.testng.annotations.Test;
 import java.util.concurrent.Callable;
@@ -98,13 +100,14 @@ public class TestNodeCache extends BaseClassForTests
         finally
         {
             CloseableUtils.closeQuietly(cache);
-            CloseableUtils.closeQuietly(client);
+            TestCleanState.closeAndTestClean(client);
         }
     }
 
     @Test
     public void     testRebuildAgainstOtherProcesses() throws Exception
     {
+        Timing2                 timing2 = new Timing2();
         NodeCache               cache = null;
         final CuratorFramework  client = CuratorFrameworkFactory.newClient(server.getConnectString(), new RetryOneTime(1));
         client.start();
@@ -137,7 +140,7 @@ public class TestNodeCache extends BaseClassForTests
                     @Override
                     public Object call() throws Exception
                     {
-                        finalCache.rebuildTestExchanger.exchange(new Object(), 10, TimeUnit.SECONDS);
+                        finalCache.rebuildTestExchanger.exchange(new Object(), timing2.forWaiting().seconds(), TimeUnit.SECONDS);
 
                         // simulate another process updating the node while we're rebuilding
                         client.setData().forPath("/test/snafu", "other".getBytes());
@@ -145,7 +148,7 @@ public class TestNodeCache extends BaseClassForTests
                         ChildData       currentData = finalCache.getCurrentData();
                         Assert.assertNotNull(currentData);
 
-                        finalCache.rebuildTestExchanger.exchange(new Object(), 10, TimeUnit.SECONDS);
+                        finalCache.rebuildTestExchanger.exchange(new Object(), timing2.forWaiting().seconds(), TimeUnit.SECONDS);
 
                         return null;
                     }
@@ -154,14 +157,14 @@ public class TestNodeCache extends BaseClassForTests
             cache.start(false);
             future.get();
 
-            Assert.assertTrue(latch.await(10, TimeUnit.SECONDS));
+            Assert.assertTrue(timing2.awaitLatch(latch));
             Assert.assertNotNull(cache.getCurrentData());
             Assert.assertEquals(cache.getCurrentData().getData(), "other".getBytes());
         }
         finally
         {
             CloseableUtils.closeQuietly(cache);
-            CloseableUtils.closeQuietly(client);
+            TestCleanState.closeAndTestClean(client);
         }
     }
 
@@ -193,7 +196,7 @@ public class TestNodeCache extends BaseClassForTests
                 }
             );
 
-            KillSession.kill(client.getZookeeperClient().getZooKeeper(), server.getConnectString());
+            Compatibility.injectSessionExpiration(client.getZookeeperClient().getZooKeeper());
             Thread.sleep(timing.multiple(1.5).session());
 
             Assert.assertEquals(cache.getCurrentData().getData(), "start".getBytes());
@@ -204,7 +207,7 @@ public class TestNodeCache extends BaseClassForTests
         finally
         {
             CloseableUtils.closeQuietly(cache);
-            CloseableUtils.closeQuietly(client);
+            TestCleanState.closeAndTestClean(client);
         }
     }
 
@@ -252,7 +255,7 @@ public class TestNodeCache extends BaseClassForTests
         finally
         {
             CloseableUtils.closeQuietly(cache);
-            CloseableUtils.closeQuietly(client);
+            TestCleanState.closeAndTestClean(client);
         }
     }
 }

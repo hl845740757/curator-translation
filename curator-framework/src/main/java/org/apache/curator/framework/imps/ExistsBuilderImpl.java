@@ -25,36 +25,64 @@ import org.apache.curator.utils.ZKPaths;
 import org.apache.zookeeper.AsyncCallback;
 import org.apache.zookeeper.KeeperException;
 import org.apache.zookeeper.Watcher;
+import org.apache.zookeeper.data.ACL;
 import org.apache.zookeeper.data.Stat;
+
+import java.util.List;
 import java.util.concurrent.Callable;
 import java.util.concurrent.Executor;
 
-class ExistsBuilderImpl implements ExistsBuilder, BackgroundOperation<String>, ErrorListenerPathable<Stat>
+public class ExistsBuilderImpl implements ExistsBuilder, BackgroundOperation<String>, ErrorListenerPathable<Stat>, ACLableExistBuilderMain
 {
     private final CuratorFrameworkImpl client;
     private Backgrounding backgrounding;
     private Watching watching;
+    private boolean createParentsIfNeeded;
     private boolean createParentContainersIfNeeded;
+    private ACLing acling;
 
     ExistsBuilderImpl(CuratorFrameworkImpl client)
     {
+        this(client, new Backgrounding(), null, false, false);
+    }
+
+    public ExistsBuilderImpl(CuratorFrameworkImpl client, Backgrounding backgrounding, Watcher watcher, boolean createParentsIfNeeded, boolean createParentContainersIfNeeded)
+    {
         this.client = client;
-        backgrounding = new Backgrounding();
-        watching = new Watching();
-        createParentContainersIfNeeded = false;
+        this.backgrounding = backgrounding;
+        this.watching = new Watching(client, watcher);
+        this.createParentsIfNeeded = createParentsIfNeeded;
+        this.createParentContainersIfNeeded = createParentContainersIfNeeded;
+        this.acling = new ACLing(client.getAclProvider());
     }
 
     @Override
-    public ExistsBuilderMain creatingParentContainersIfNeeded()
+    public ACLableExistBuilderMain creatingParentsIfNeeded()
+    {
+        createParentContainersIfNeeded = false;
+        createParentsIfNeeded = true;
+        return this;
+    }
+
+    @Override
+    public ACLableExistBuilderMain creatingParentContainersIfNeeded()
     {
         createParentContainersIfNeeded = true;
+        createParentsIfNeeded = false;
+        return this;
+    }
+
+    @Override
+    public ExistsBuilderMain withACL(List<ACL> aclList)
+    {
+        acling = new ACLing(client.getAclProvider(), aclList, true);
         return this;
     }
 
     @Override
     public BackgroundPathable<Stat> watched()
     {
-        watching = new Watching(true);
+        watching = new Watching(client, true);
         return this;
     }
 
@@ -132,8 +160,9 @@ class ExistsBuilderImpl implements ExistsBuilder, BackgroundOperation<String>, E
                 @Override
                 public void processResult(int rc, String path, Object ctx, Stat stat)
                 {
-                    trace.setReturnCode(rc).setPath(path).setWithWatcher(watching.getWatcher() != null).setStat(stat).commit();
-                    CuratorEvent event = new CuratorEventImpl(client, CuratorEventType.EXISTS, rc, path, null, ctx, stat, null, null, null, null);
+                    watching.commitWatcher(rc, true);
+                    trace.setReturnCode(rc).setPath(path).setWithWatcher(watching.hasWatcher()).setStat(stat).commit();
+                    CuratorEvent event = new CuratorEventImpl(client, CuratorEventType.EXISTS, rc, path, null, ctx, stat, null, null, null, null, null);
                     client.processBackgroundOperation(operationAndData, event);
                 }
             };
@@ -143,12 +172,12 @@ class ExistsBuilderImpl implements ExistsBuilder, BackgroundOperation<String>, E
             }
             else
             {
-                client.getZooKeeper().exists(operationAndData.getData(), watching.getWatcher(), callback, backgrounding.getContext());
+                client.getZooKeeper().exists(operationAndData.getData(), watching.getWatcher(operationAndData.getData()), callback, backgrounding.getContext());
             }
         }
         catch ( Throwable e )
         {
-            backgrounding.checkError(e);
+            backgrounding.checkError(e, watching);
         }
     }
 
@@ -157,13 +186,15 @@ class ExistsBuilderImpl implements ExistsBuilder, BackgroundOperation<String>, E
     {
         path = client.fixForNamespace(path);
 
+        client.getSchemaSet().getSchema(path).validateWatch(path, watching.isWatched() || watching.hasWatcher());
+
         Stat        returnStat = null;
         if ( backgrounding.inBackground() )
         {
-            OperationAndData<String> operationAndData = new OperationAndData<String>(this, path, backgrounding.getCallback(), null, backgrounding.getContext());
-            if ( createParentContainersIfNeeded )
+            OperationAndData<String> operationAndData = new OperationAndData<String>(this, path, backgrounding.getCallback(), null, backgrounding.getContext(), watching);
+            if ( createParentContainersIfNeeded || createParentsIfNeeded )
             {
-                CreateBuilderImpl.backgroundCreateParentsThenNode(client, operationAndData, operationAndData.getData(), backgrounding, true);
+                CreateBuilderImpl.backgroundCreateParentsThenNode(client, operationAndData, operationAndData.getData(), backgrounding, acling.getACLProviderForParents(), createParentContainersIfNeeded);
             }
             else
             {
@@ -180,7 +211,7 @@ class ExistsBuilderImpl implements ExistsBuilder, BackgroundOperation<String>, E
 
     private Stat pathInForeground(final String path) throws Exception
     {
-        if ( createParentContainersIfNeeded )
+        if ( createParentContainersIfNeeded || createParentsIfNeeded )
         {
             final String parent = ZKPaths.getPathAndNode(path).getPath();
             if ( !parent.equals(ZKPaths.PATH_SEPARATOR) )
@@ -196,7 +227,7 @@ class ExistsBuilderImpl implements ExistsBuilder, BackgroundOperation<String>, E
                         {
                             try
                             {
-                                ZKPaths.mkdirs(client.getZooKeeper(), parent, true, client.getAclProvider(), true);
+                                ZKPaths.mkdirs(client.getZooKeeper(), parent, true, acling.getACLProviderForParents(), createParentContainersIfNeeded);
                             }
                             catch ( KeeperException.NodeExistsException e )
                             {
@@ -234,13 +265,15 @@ class ExistsBuilderImpl implements ExistsBuilder, BackgroundOperation<String>, E
                     }
                     else
                     {
-                        returnStat = client.getZooKeeper().exists(path, watching.getWatcher());
+                        returnStat = client.getZooKeeper().exists(path, watching.getWatcher(path));
+                        int rc = (returnStat != null) ? KeeperException.NoNodeException.Code.OK.intValue() : KeeperException.NoNodeException.Code.NONODE.intValue();
+                        watching.commitWatcher(rc, true);
                     }
                     return returnStat;
                 }
             }
         );
-        trace.setPath(path).setWithWatcher(watching.getWatcher() != null).setStat(returnStat).commit();
+        trace.setPath(path).setWithWatcher(watching.hasWatcher()).setStat(returnStat).commit();
         return returnStat;
     }
 }

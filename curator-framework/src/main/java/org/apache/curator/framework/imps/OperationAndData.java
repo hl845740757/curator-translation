@@ -40,19 +40,21 @@ class OperationAndData<T> implements Delayed, RetrySleeper
     private final AtomicLong sleepUntilTimeMs = new AtomicLong(0);
     private final AtomicLong ordinal = new AtomicLong();
     private final Object context;
+    private final boolean connectionRequired;
 
     interface ErrorCallback<T>
     {
         void retriesExhausted(OperationAndData<T> operationAndData);
     }
-
-    OperationAndData(BackgroundOperation<T> operation, T data, BackgroundCallback callback, ErrorCallback<T> errorCallback, Object context)
+    
+    OperationAndData(BackgroundOperation<T> operation, T data, BackgroundCallback callback, ErrorCallback<T> errorCallback, Object context, boolean connectionRequired)
     {
         this.operation = operation;
         this.data = data;
         this.callback = callback;
         this.errorCallback = errorCallback;
         this.context = context;
+        this.connectionRequired = connectionRequired;
         reset();
     }
 
@@ -62,9 +64,19 @@ class OperationAndData<T> implements Delayed, RetrySleeper
         ordinal.set(nextOrdinal.getAndIncrement());
     }
 
+    OperationAndData(BackgroundOperation<T> operation, T data, BackgroundCallback callback, ErrorCallback<T> errorCallback, Object context, Watching watching)
+    {
+        this(operation, data, callback, errorCallback, context, true);
+    }
+
     Object getContext()
     {
         return context;
+    }
+    
+    boolean isConnectionRequired()
+    {
+        return connectionRequired;
     }
 
     void callPerformBackgroundOperation() throws Exception
@@ -101,6 +113,11 @@ class OperationAndData<T> implements Delayed, RetrySleeper
     BackgroundOperation<T> getOperation()
     {
         return operation;
+    }
+
+    void clearSleep()
+    {
+        sleepUntilTimeMs.set(0);
     }
 
     @Override

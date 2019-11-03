@@ -74,6 +74,10 @@ public class InstanceSpec
     private final Map<String,Object> customProperties;
     private final String hostname;
 
+    public static void reset() {
+        nextServerId.set(1);
+    }
+
     public static InstanceSpec newInstanceSpec()
     {
         return new InstanceSpec(null, -1, -1, -1, true, -1, -1, -1);

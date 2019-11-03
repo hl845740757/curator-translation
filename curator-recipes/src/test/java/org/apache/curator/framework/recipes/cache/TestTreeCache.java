@@ -23,8 +23,8 @@ import com.google.common.collect.ImmutableSet;
 import org.apache.curator.framework.CuratorFramework;
 import org.apache.curator.framework.api.UnhandledErrorListener;
 import org.apache.curator.framework.recipes.cache.TreeCacheEvent.Type;
-import org.apache.curator.test.KillSession;
 import org.apache.curator.utils.CloseableUtils;
+import org.apache.curator.utils.Compatibility;
 import org.apache.zookeeper.CreateMode;
 import org.testng.Assert;
 import org.testng.annotations.Test;
@@ -423,12 +423,9 @@ public class TestTreeCache extends BaseTestTreeCache
         client.create().withMode(CreateMode.EPHEMERAL).forPath("/test/me", "data".getBytes());
         assertEvent(TreeCacheEvent.Type.NODE_ADDED, "/test/me");
 
-        KillSession.kill(client.getZookeeperClient().getZooKeeper(), server.getConnectString());
-        assertEvent(TreeCacheEvent.Type.CONNECTION_SUSPENDED);
-        assertEvent(TreeCacheEvent.Type.CONNECTION_LOST);
-        assertEvent(TreeCacheEvent.Type.CONNECTION_RECONNECTED);
-        assertEvent(TreeCacheEvent.Type.NODE_REMOVED, "/test/me", "data".getBytes());
-        assertEvent(TreeCacheEvent.Type.INITIALIZED);
+        Compatibility.injectSessionExpiration(client.getZookeeperClient().getZooKeeper());
+        assertEvent(TreeCacheEvent.Type.NODE_REMOVED, "/test/me", "data".getBytes(), true);
+        assertEvent(TreeCacheEvent.Type.INITIALIZED, null, null, true);
 
         assertNoMoreEvents();
     }
@@ -462,6 +459,30 @@ public class TestTreeCache extends BaseTestTreeCache
         client.delete().forPath("/test/one");
         assertEvent(TreeCacheEvent.Type.NODE_REMOVED, "/test/one", "sup!".getBytes());
         Assert.assertEquals(cache.getCurrentChildren("/test").keySet(), ImmutableSet.of());
+
+        assertNoMoreEvents();
+    }
+
+    @Test
+    public void testBasicsWithNoZkWatches() throws Exception
+    {
+        client.create().forPath("/test");
+        client.create().forPath("/test/one", "hey there".getBytes());
+
+        cache = buildWithListeners(TreeCache.newBuilder(client, "/test").disableZkWatches(true));
+
+        cache.start();
+        assertEvent(TreeCacheEvent.Type.NODE_ADDED, "/test");
+        assertEvent(TreeCacheEvent.Type.NODE_ADDED, "/test/one");
+
+        assertEvent(TreeCacheEvent.Type.INITIALIZED);
+        Assert.assertEquals(cache.getCurrentChildren("/test").keySet(), ImmutableSet.of("one"));
+        Assert.assertEquals(new String(cache.getCurrentData("/test/one").getData()), "hey there");
+        Assert.assertEquals(cache.getCurrentChildren("/test/one").keySet(), ImmutableSet.of());
+        Assert.assertNull(cache.getCurrentChildren("/test/o"));
+        Assert.assertNull(cache.getCurrentChildren("/test/onely"));
+        Assert.assertNull(cache.getCurrentChildren("/t"));
+        Assert.assertNull(cache.getCurrentChildren("/testing"));
 
         assertNoMoreEvents();
     }
@@ -584,7 +605,8 @@ public class TestTreeCache extends BaseTestTreeCache
             @Override
             public void childEvent(CuratorFramework client, TreeCacheEvent event) throws Exception
             {
-                if (event.getType() == Type.NODE_UPDATED) {
+                if ( event.getType() == Type.NODE_UPDATED )
+                {
                     throw new RuntimeException("Test Exception");
                 }
             }

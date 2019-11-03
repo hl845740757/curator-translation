@@ -22,8 +22,6 @@ import org.apache.curator.framework.CuratorFramework;
 import org.apache.curator.framework.state.ConnectionStateListener;
 
 /**
- * leaderSelector监听器
- *
  * Notification for leadership
  *
  * @see LeaderSelector
@@ -31,9 +29,6 @@ import org.apache.curator.framework.state.ConnectionStateListener;
 public interface LeaderSelectorListener extends ConnectionStateListener
 {
     /**
-     * 当你的实例获得领导权时没，该方法将会被调用。
-     * 直到你希望释放领导权之前，不应该从该方法返回。
-     *
      * Called when your instance has been granted leadership. This method
      * should not return until you wish to release leadership
      *

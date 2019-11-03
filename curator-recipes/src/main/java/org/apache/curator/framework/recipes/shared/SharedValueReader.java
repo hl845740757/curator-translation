@@ -26,8 +26,6 @@ import org.apache.curator.framework.listen.ListenerContainer;
 public interface SharedValueReader
 {
     /**
-     * 获取当前的数据。
-     *
      * Return the current value of the count
      *
      * @return count
@@ -35,8 +33,6 @@ public interface SharedValueReader
     public byte[]   getValue();
 
     /**
-     * 获取当前带有版本号的数据 - 拥有版本号可以实现CAS更新。
-     *
      * Return the current version and value
      *
      * @return version/value
@@ -44,8 +40,6 @@ public interface SharedValueReader
     public VersionedValue<byte[]> getVersionedValue();
 
     /**
-     * 获取监听器管理对象，以注册监听器。
-     *
      * Returns the listenable
      *
      * @return listenable

@@ -21,7 +21,6 @@ package org.apache.curator;
 import org.apache.curator.drivers.EventTrace;
 import org.apache.curator.drivers.TracerDriver;
 import org.apache.curator.utils.DebugUtils;
-import org.apache.curator.utils.ThreadUtils;
 import org.apache.zookeeper.KeeperException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -98,24 +97,7 @@ public class RetryLoop
      */
     public static<T> T      callWithRetry(CuratorZookeeperClient client, Callable<T> proc) throws Exception
     {
-        T               result = null;
-        RetryLoop       retryLoop = client.newRetryLoop();
-        while ( retryLoop.shouldContinue() )
-        {
-            try
-            {
-                client.internalBlockUntilConnectedOrTimedOut();
-
-                result = proc.call();
-                retryLoop.markComplete();
-            }
-            catch ( Exception e )
-            {
-                ThreadUtils.checkInterrupted(e);
-                retryLoop.takeException(e);
-            }
-        }
-        return result;
+        return client.getConnectionHandlingPolicy().callWithRetry(client, proc);
     }
 
     RetryLoop(RetryPolicy retryPolicy, AtomicReference<TracerDriver> tracer)
@@ -153,7 +135,8 @@ public class RetryLoop
         return (rc == KeeperException.Code.CONNECTIONLOSS.intValue()) ||
             (rc == KeeperException.Code.OPERATIONTIMEOUT.intValue()) ||
             (rc == KeeperException.Code.SESSIONMOVED.intValue()) ||
-            (rc == KeeperException.Code.SESSIONEXPIRED.intValue());
+            (rc == KeeperException.Code.SESSIONEXPIRED.intValue()) ||
+            (rc == -13); // KeeperException.Code.NEWCONFIGNOQUORUM.intValue()) - using hard coded value for ZK 3.4.x compatibility
     }
 
     /**

@@ -25,8 +25,6 @@ import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * 循环策略 - 每次都尝试使用与上一个不同的实例进行服务。
- *
  * This strategy rotates sequentially through the list of instances
  */
 public class RoundRobinStrategy<T> implements ProviderStrategy<T>
@@ -41,7 +39,6 @@ public class RoundRobinStrategy<T> implements ProviderStrategy<T>
         {
             return null;
         }
-        // 计算索引
         int                         thisIndex = Math.abs(index.getAndIncrement());
         return instances.get(thisIndex % instances.size());
     }

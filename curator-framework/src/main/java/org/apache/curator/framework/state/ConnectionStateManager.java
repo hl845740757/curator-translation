@@ -19,10 +19,11 @@
 
 package org.apache.curator.framework.state;
 
-import com.google.common.base.Function;
 import com.google.common.base.Preconditions;
 import org.apache.curator.framework.CuratorFramework;
-import org.apache.curator.framework.listen.ListenerContainer;
+import org.apache.curator.framework.listen.Listenable;
+import org.apache.curator.framework.listen.StandardListenerManager;
+import org.apache.curator.utils.Compatibility;
 import org.apache.curator.utils.ThreadUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -65,13 +66,17 @@ public class ConnectionStateManager implements Closeable
     private final Logger log = LoggerFactory.getLogger(getClass());
     private final BlockingQueue<ConnectionState> eventQueue = new ArrayBlockingQueue<ConnectionState>(QUEUE_SIZE);
     private final CuratorFramework client;
-    private final ListenerContainer<ConnectionStateListener> listeners = new ListenerContainer<ConnectionStateListener>();
+    private final int sessionTimeoutMs;
+    private final int sessionExpirationPercent;
     private final AtomicBoolean initialConnectMessageSent = new AtomicBoolean(false);
     private final ExecutorService service;
     private final AtomicReference<State> state = new AtomicReference<State>(State.LATENT);
+    private final StandardListenerManager<ConnectionStateListener> listeners;
 
     // guarded by sync
     private ConnectionState currentConnectionState;
+
+    private volatile long startOfSuspendedEpoch = 0;
 
     private enum State
     {
@@ -83,15 +88,32 @@ public class ConnectionStateManager implements Closeable
     /**
      * @param client        the client
      * @param threadFactory thread factory to use or null for a default
+     * @param sessionTimeoutMs the ZK session timeout in milliseconds
+     * @param sessionExpirationPercent percentage of negotiated session timeout to use when simulating a session timeout. 0 means don't simulate at all
      */
-    public ConnectionStateManager(CuratorFramework client, ThreadFactory threadFactory)
+    public ConnectionStateManager(CuratorFramework client, ThreadFactory threadFactory, int sessionTimeoutMs, int sessionExpirationPercent)
+    {
+        this(client, threadFactory, sessionTimeoutMs, sessionExpirationPercent, ConnectionStateListenerDecorator.standard);
+    }
+
+    /**
+     * @param client        the client
+     * @param threadFactory thread factory to use or null for a default
+     * @param sessionTimeoutMs the ZK session timeout in milliseconds
+     * @param sessionExpirationPercent percentage of negotiated session timeout to use when simulating a session timeout. 0 means don't simulate at all
+     * @param connectionStateListenerDecorator the decorator to use
+     */
+    public ConnectionStateManager(CuratorFramework client, ThreadFactory threadFactory, int sessionTimeoutMs, int sessionExpirationPercent, ConnectionStateListenerDecorator connectionStateListenerDecorator)
     {
         this.client = client;
+        this.sessionTimeoutMs = sessionTimeoutMs;
+        this.sessionExpirationPercent = sessionExpirationPercent;
         if ( threadFactory == null )
         {
             threadFactory = ThreadUtils.newThreadFactory("ConnectionStateManager");
         }
         service = Executors.newSingleThreadExecutor(threadFactory);
+        listeners = StandardListenerManager.mappingStandard(listener -> listener.doNotDecorate() ? listener : connectionStateListenerDecorator.decorateListener(client, listener));
     }
 
     /**
@@ -129,15 +151,16 @@ public class ConnectionStateManager implements Closeable
      * Return the listenable
      *
      * @return listenable
+     * @since 4.2.0 return type has changed from ListenerContainer to Listenable
      */
-    public ListenerContainer<ConnectionStateListener> getListenable()
+    public Listenable<ConnectionStateListener> getListenable()
     {
         return listeners;
     }
 
     /**
      * Change to {@link ConnectionState#SUSPENDED} only if not already suspended and not lost
-     * 
+     *
      * @return true if connection is set to SUSPENDED
      */
     public synchronized boolean setToSuspended()
@@ -152,7 +175,7 @@ public class ConnectionStateManager implements Closeable
             return false;
         }
 
-        currentConnectionState = ConnectionState.SUSPENDED;
+        setCurrentConnectionState(ConnectionState.SUSPENDED);
         postState(ConnectionState.SUSPENDED);
 
         return true;
@@ -177,7 +200,7 @@ public class ConnectionStateManager implements Closeable
         {
             return false;
         }
-        currentConnectionState = newConnectionState;
+        setCurrentConnectionState(newConnectionState);
 
         ConnectionState localState = newConnectionState;
         boolean isNegativeMessage = ((newConnectionState == ConnectionState.LOST) || (newConnectionState == ConnectionState.SUSPENDED) || (newConnectionState == ConnectionState.READ_ONLY));
@@ -242,25 +265,27 @@ public class ConnectionStateManager implements Closeable
         {
             try
             {
-                final ConnectionState newState = eventQueue.take();
+                int useSessionTimeoutMs = getUseSessionTimeoutMs();
+                long elapsedMs = startOfSuspendedEpoch == 0 ? useSessionTimeoutMs / 2 : System.currentTimeMillis() - startOfSuspendedEpoch;
+                long pollMaxMs = useSessionTimeoutMs - elapsedMs;
 
-                if ( listeners.size() == 0 )
+                final ConnectionState newState = eventQueue.poll(pollMaxMs, TimeUnit.MILLISECONDS);
+                if ( newState != null )
                 {
-                    log.warn("There are no ConnectionStateListeners registered.");
-                }
+                    if ( listeners.size() == 0 )
+                    {
+                        log.warn("There are no ConnectionStateListeners registered.");
+                    }
 
-                listeners.forEach
-                    (
-                        new Function<ConnectionStateListener, Void>()
-                        {
-                            @Override
-                            public Void apply(ConnectionStateListener listener)
-                            {
-                                listener.stateChanged(client, newState);
-                                return null;
-                            }
-                        }
-                    );
+                    listeners.forEach(listener -> listener.stateChanged(client, newState));
+                }
+                else if ( sessionExpirationPercent > 0 )
+                {
+                    synchronized(this)
+                    {
+                        checkSessionExpiration();
+                    }
+                }
             }
             catch ( InterruptedException e )
             {
@@ -270,4 +295,52 @@ public class ConnectionStateManager implements Closeable
             }
         }
     }
+
+    private void checkSessionExpiration()
+    {
+        if ( (currentConnectionState == ConnectionState.SUSPENDED) && (startOfSuspendedEpoch != 0) )
+        {
+            long elapsedMs = System.currentTimeMillis() - startOfSuspendedEpoch;
+            int useSessionTimeoutMs = getUseSessionTimeoutMs();
+            if ( elapsedMs >= useSessionTimeoutMs )
+            {
+                startOfSuspendedEpoch = System.currentTimeMillis(); // reset startOfSuspendedEpoch to avoid spinning on this session expiration injection CURATOR-405
+                log.warn(String.format("Session timeout has elapsed while SUSPENDED. Injecting a session expiration. Elapsed ms: %d. Adjusted session timeout ms: %d", elapsedMs, useSessionTimeoutMs));
+                try
+                {
+                    Compatibility.injectSessionExpiration(client.getZookeeperClient().getZooKeeper());
+                }
+                catch ( Exception e )
+                {
+                    log.error("Could not inject session expiration", e);
+                }
+            }
+        }
+        else if ( currentConnectionState == ConnectionState.LOST )
+        {
+            try
+            {
+                // give ConnectionState.checkTimeouts() a chance to run, reset ensemble providers, etc.
+                client.getZookeeperClient().getZooKeeper();
+            }
+            catch ( Exception e )
+            {
+                log.error("Could not get ZooKeeper", e);
+            }
+        }
+    }
+
+    private void setCurrentConnectionState(ConnectionState newConnectionState)
+    {
+        currentConnectionState = newConnectionState;
+        startOfSuspendedEpoch = (currentConnectionState == ConnectionState.SUSPENDED) ? System.currentTimeMillis() : 0;
+    }
+
+    private int getUseSessionTimeoutMs() {
+        int lastNegotiatedSessionTimeoutMs = client.getZookeeperClient().getLastNegotiatedSessionTimeoutMs();
+        int useSessionTimeoutMs = (lastNegotiatedSessionTimeoutMs > 0) ? lastNegotiatedSessionTimeoutMs : sessionTimeoutMs;
+        useSessionTimeoutMs = sessionExpirationPercent > 0 && startOfSuspendedEpoch != 0 ? (useSessionTimeoutMs * sessionExpirationPercent) / 100 : useSessionTimeoutMs;
+        return useSessionTimeoutMs;
+    }
+
 }

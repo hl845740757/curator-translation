@@ -24,6 +24,7 @@ import com.google.common.collect.Queues;
 import org.apache.curator.framework.CuratorFramework;
 import org.apache.curator.framework.CuratorFrameworkFactory;
 import org.apache.curator.framework.api.CuratorWatcher;
+import org.apache.curator.framework.imps.TestCleanState;
 import org.apache.curator.framework.recipes.shared.SharedCount;
 import org.apache.curator.framework.state.ConnectionState;
 import org.apache.curator.framework.state.ConnectionStateListener;
@@ -147,10 +148,9 @@ public class TestInterProcessSemaphore extends BaseClassForTests
                     }
                 }
             });
-
-            timing.sleepABit();
+      
             server.stop();
-            Assert.assertTrue(timing.awaitLatch(lostLatch));
+            Assert.assertTrue(timing.multiple(1.25).awaitLatch(lostLatch));
             InterProcessSemaphoreV2.debugAcquireLatch.countDown();  // the waiting semaphore proceeds to getChildren - which should fail
             Assert.assertTrue(timing.awaitLatch(InterProcessSemaphoreV2.debugFailedGetChildrenLatch));  // wait until getChildren fails
 
@@ -229,10 +229,12 @@ public class TestInterProcessSemaphore extends BaseClassForTests
 
             future1.get();
             future2.get();
+
+            count.close();
         }
         finally
         {
-            CloseableUtils.closeQuietly(client);
+            TestCleanState.closeAndTestClean(client);
         }
     }
 
@@ -269,8 +271,8 @@ public class TestInterProcessSemaphore extends BaseClassForTests
         }
         finally
         {
-            CloseableUtils.closeQuietly(client1);
-            CloseableUtils.closeQuietly(client2);
+            TestCleanState.closeAndTestClean(client1);
+            TestCleanState.closeAndTestClean(client2);
         }
     }
 
@@ -355,7 +357,7 @@ public class TestInterProcessSemaphore extends BaseClassForTests
                                     }
                                     finally
                                     {
-                                        client.close();
+                                        TestCleanState.closeAndTestClean(client);
                                     }
                                     return null;
                                 }
@@ -428,7 +430,7 @@ public class TestInterProcessSemaphore extends BaseClassForTests
                             }
                             finally
                             {
-                                client.close();
+                                TestCleanState.closeAndTestClean(client);
                             }
                             return null;
                         }
@@ -530,7 +532,7 @@ public class TestInterProcessSemaphore extends BaseClassForTests
         }
         finally
         {
-            client.close();
+            TestCleanState.closeAndTestClean(client);
         }
     }
 
@@ -574,7 +576,7 @@ public class TestInterProcessSemaphore extends BaseClassForTests
         }
         finally
         {
-            client.close();
+            TestCleanState.closeAndTestClean(client);
         }
     }
 
@@ -592,7 +594,7 @@ public class TestInterProcessSemaphore extends BaseClassForTests
         }
         finally
         {
-            client.close();
+            TestCleanState.closeAndTestClean(client);
         }
     }
 
@@ -628,7 +630,7 @@ public class TestInterProcessSemaphore extends BaseClassForTests
             {
                 CloseableUtils.closeQuietly(l);
             }
-            CloseableUtils.closeQuietly(client);
+            TestCleanState.closeAndTestClean(client);
         }
     }
 
@@ -657,7 +659,7 @@ public class TestInterProcessSemaphore extends BaseClassForTests
             {
                 CloseableUtils.closeQuietly(l);
             }
-            CloseableUtils.closeQuietly(client);
+            TestCleanState.closeAndTestClean(client);
         }
     }
 
@@ -689,9 +691,16 @@ public class TestInterProcessSemaphore extends BaseClassForTests
 
             timing.forWaiting().sleepABit();
 
-            List<String> children = client.getChildren().forPath("/test");
+            try
+            {
+                List<String> children = client.getChildren().forPath("/test");
 
-            Assert.assertEquals(children.size(), 0, "All children of /test should have been reaped");
+                Assert.assertEquals(children.size(), 0, "All children of /test should have been reaped");
+            }
+            catch ( KeeperException.NoNodeException ok )
+            {
+                // this is OK - if Container Nodes are used the "/test" path will go away - no point in updating the test for deprecated code
+            }
         }
         finally
         {
@@ -765,9 +774,57 @@ public class TestInterProcessSemaphore extends BaseClassForTests
         }
         finally
         {
-            client.close();
             executor.shutdownNow();
+            TestCleanState.closeAndTestClean(client);
         }
     }
+    
+    @Test
+    public void testInterruptAcquire() throws Exception
+    {
+        // CURATOR-462
+        final Timing timing = new Timing();
+        CuratorFramework client = CuratorFrameworkFactory.newClient(server.getConnectString(), timing.session(), timing.connection(), new RetryOneTime(1));
+        client.start();
+        try
+        {
+            final InterProcessSemaphoreV2 s1 = new InterProcessSemaphoreV2(client, "/test", 1);
+            final InterProcessSemaphoreV2 s2 = new InterProcessSemaphoreV2(client, "/test", 1);
+            final InterProcessSemaphoreV2 s3 = new InterProcessSemaphoreV2(client, "/test", 1);
+            
+            final CountDownLatch debugWaitLatch = s2.debugWaitLatch = new CountDownLatch(1);
+            
+            // Acquire exclusive semaphore
+            Lease lease = s1.acquire(timing.forWaiting().seconds(), TimeUnit.SECONDS);
+            Assert.assertNotNull(lease);
+            
+            // Queue up another semaphore on the same path
+            Future<Object> handle = Executors.newSingleThreadExecutor().submit(new Callable<Object>() {
+                
+                @Override
+                public Object call() throws Exception {
+                    s2.acquire();
+                    return null;
+                }
+            });
 
+            // Wait until second lease is created and the wait is started for it to become active
+            Assert.assertTrue(timing.awaitLatch(debugWaitLatch));
+            
+            // Interrupt the wait
+            handle.cancel(true);
+            
+            // Assert that the second lease is gone
+            timing.sleepABit();
+            Assert.assertEquals(client.getChildren().forPath("/test/leases").size(), 1);
+            
+            // Assert that after closing the first (current) semaphore, we can acquire a new one
+            s1.returnLease(lease);
+            Assert.assertNotNull(s3.acquire(timing.forWaiting().seconds(), TimeUnit.SECONDS));
+        }
+        finally
+        {
+            TestCleanState.closeAndTestClean(client);
+        }
+    }
 }

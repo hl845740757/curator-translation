@@ -28,7 +28,7 @@ import org.apache.curator.utils.ThreadUtils;
 import org.apache.zookeeper.KeeperException;
 import java.util.concurrent.Executor;
 
-class Backgrounding
+public class Backgrounding
 {
     private final boolean inBackground;
     private final Object context;
@@ -89,6 +89,14 @@ class Backgrounding
         this.errorListener = errorListener;
     }
 
+    public Backgrounding(BackgroundCallback callback, UnhandledErrorListener errorListener)
+    {
+        this.callback = callback;
+        this.errorListener = errorListener;
+        inBackground = true;
+        context = null;
+    }
+
     Backgrounding()
     {
         inBackground = false;
@@ -112,7 +120,7 @@ class Backgrounding
         return callback;
     }
 
-    void checkError(Throwable e) throws Exception
+    void checkError(Throwable e, Watching watching) throws Exception
     {
         if ( e != null )
         {

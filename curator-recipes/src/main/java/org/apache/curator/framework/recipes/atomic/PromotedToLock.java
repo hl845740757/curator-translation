@@ -25,21 +25,13 @@ import java.util.concurrent.TimeUnit;
 import org.apache.curator.utils.PathUtils;
 
 /**
- * 表示锁升级信息的抽象。 乐观锁升级为互斥锁的信息。
- * 请使用{@link #builder()}创建。
- *
  * Abstraction of arguments for mutex promotion. Use {@link #builder()} to create.
  */
 public class PromotedToLock
 {
-    /** 锁的路径 */
     private final String        path;
-
-    /** 尝试获取互斥锁的超时时间，避免长期阻塞 */
     private final long          maxLockTime;
     private final TimeUnit      maxLockTimeUnit;
-
-    /** 失败重试策略 */
     private final RetryPolicy   retryPolicy;
 
     /**
@@ -70,8 +62,6 @@ public class PromotedToLock
         }
 
         /**
-         * 设置锁的路径（必须赋值）
-         *
          * Set the path for the mutex lock (required)
          *
          * @param path path
@@ -84,8 +74,6 @@ public class PromotedToLock
         }
 
         /**
-         * 设置操作失败时的重试策略
-         *
          * Set the retry policy to use when an operation does not succeed
          *
          * @param retryPolicy new policy
@@ -98,8 +86,6 @@ public class PromotedToLock
         }
 
         /**
-         * 设置获取锁的超时时间（这是一个可选项）
-         *
          * Set the timeout to use when locking (optional)
          *
          * @param maxLockTime time

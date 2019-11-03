@@ -28,9 +28,6 @@ import java.util.concurrent.TimeUnit;
 import static com.google.common.base.Preconditions.checkArgument;
 
 /**
- * 永久重试策略 - 两次重试期间睡眠指定时间。
- * 总是允许重试直到用户中断线程。
- *
  * {@link RetryPolicy} implementation that always <i>allowsRetry</i>.
  */
 public class RetryForever implements RetryPolicy
@@ -54,12 +51,10 @@ public class RetryForever implements RetryPolicy
         }
         catch (InterruptedException e)
         {
-            // 被中断 - 表明用户期望退出重试
             Thread.currentThread().interrupt();
             log.warn("Error occurred while sleeping", e);
             return false;
         }
-        // 总是允许重试
         return true;
     }
 }

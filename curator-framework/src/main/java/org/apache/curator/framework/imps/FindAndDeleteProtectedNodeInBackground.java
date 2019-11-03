@@ -56,7 +56,7 @@ class FindAndDeleteProtectedNodeInBackground implements BackgroundOperation<Void
                 client.processBackgroundOperation(operationAndData, null);
             }
         };
-        OperationAndData<Void> operationAndData = new OperationAndData<Void>(this, null, null, errorCallback, null);
+        OperationAndData<Void> operationAndData = new OperationAndData<Void>(this, null, null, errorCallback, null, null);
         client.processBackgroundOperation(operationAndData, null);
     }
 
@@ -100,7 +100,7 @@ class FindAndDeleteProtectedNodeInBackground implements BackgroundOperation<Void
 
                 if ( rc != KeeperException.Code.OK.intValue() )
                 {
-                    CuratorEventImpl event = new CuratorEventImpl(client, CuratorEventType.CHILDREN, rc, path, null, o, stat, null, strings, null, null);
+                    CuratorEventImpl event = new CuratorEventImpl(client, CuratorEventType.CHILDREN, rc, path, null, o, stat, null, strings, null, null, null);
                     client.processBackgroundOperation(operationAndData, event);
                 }
             }

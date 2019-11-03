@@ -27,6 +27,8 @@ import java.nio.channels.ServerSocketChannel;
 
 class TestingQuorumPeerMain extends QuorumPeerMain implements ZooKeeperMainFace
 {
+    private volatile boolean isClosed = false;
+
     @Override
     public void kill()
     {
@@ -60,8 +62,9 @@ class TestingQuorumPeerMain extends QuorumPeerMain implements ZooKeeperMainFace
     @Override
     public void close() throws IOException
     {
-        if ( quorumPeer != null )
+        if ( (quorumPeer != null) && !isClosed )
         {
+            isClosed = true;
             quorumPeer.shutdown();
         }
     }
@@ -69,17 +72,22 @@ class TestingQuorumPeerMain extends QuorumPeerMain implements ZooKeeperMainFace
     @Override
     public void blockUntilStarted() throws Exception
     {
-        while ( quorumPeer == null )
+        long startTime = System.currentTimeMillis();
+        while ( (quorumPeer == null) && ((System.currentTimeMillis() - startTime) <= TestingZooKeeperMain.MAX_WAIT_MS) )
         {
             try
             {
-                Thread.sleep(100);
+                Thread.sleep(10);
             }
             catch ( InterruptedException e )
             {
                 Thread.currentThread().interrupt();
                 break;
             }
+        }
+        if ( quorumPeer == null )
+        {
+            throw new Exception("quorumPeer never got set");
         }
     }
 }

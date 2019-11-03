@@ -19,8 +19,6 @@
 package org.apache.curator;
 
 /**
- * 重试策略 - 当一个操作失败时的重试机制。
- *
  * Abstracts the policy to use when retrying connections
  */
 public interface RetryPolicy
@@ -31,12 +29,8 @@ public interface RetryPolicy
      *
      *
      * @param retryCount the number of times retried so far (0 the first time)
-     *                这是第几次重试 - 首次重试时该值为0
      * @param elapsedTimeMs the elapsed time in ms since the operation was attempted
-     *                操作开始到现在过去的总时间(已消耗的总时间)
      * @param sleeper use this to sleep - DO NOT call Thread.sleep
-     *                用于等待的方式 - 注意：不要调用{@link Thread#sleep(long)}。
-     *                比起调用{@link Thread#sleep(long)}有更多的灵活性。
      * @return true/false
      */
     public boolean      allowRetry(int retryCount, long elapsedTimeMs, RetrySleeper sleeper);

@@ -22,9 +22,11 @@ import com.google.common.collect.Lists;
 import org.apache.curator.ensemble.EnsembleProvider;
 import org.apache.curator.framework.CuratorFramework;
 import org.apache.curator.framework.CuratorFrameworkFactory;
+import org.apache.curator.framework.imps.TestCleanState;
 import org.apache.curator.framework.state.ConnectionState;
 import org.apache.curator.framework.state.ConnectionStateListener;
 import org.apache.curator.retry.ExponentialBackoffRetry;
+import org.apache.curator.test.BaseClassForTests;
 import org.apache.curator.test.InstanceSpec;
 import org.apache.curator.test.TestingCluster;
 import org.apache.curator.test.Timing;
@@ -44,7 +46,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
-public class TestInterProcessSemaphoreCluster
+public class TestInterProcessSemaphoreCluster extends BaseClassForTests
 {
     @Test
     public void     testKilledServerWithEnsembleProvider() throws Exception
@@ -63,6 +65,17 @@ public class TestInterProcessSemaphoreCluster
             final AtomicReference<String>   connectionString = new AtomicReference<String>(cluster.getConnectString());
             final EnsembleProvider          provider = new EnsembleProvider()
             {
+                @Override
+                public void setConnectionString(String connectionString)
+                {
+                }
+
+                @Override
+                public boolean updateServerListEnabled()
+                {
+                    return false;
+                }
+
                 @Override
                 public void start() throws Exception
                 {
@@ -147,7 +160,7 @@ public class TestInterProcessSemaphoreCluster
                             }
                             finally
                             {
-                                CloseableUtils.closeQuietly(client);
+                                TestCleanState.closeAndTestClean(client);
                             }
                             return null;
                         }

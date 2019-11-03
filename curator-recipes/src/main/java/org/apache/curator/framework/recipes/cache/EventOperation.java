@@ -18,18 +18,9 @@
  */
 package org.apache.curator.framework.recipes.cache;
 
-/**
- * 事件操作，用于延迟执行事件回调，减少main-EventThread的压力。
- */
 class EventOperation implements Operation
 {
-    /**
-     * 操作(命令)的接收者，真正执行逻辑的对象。
-     */
     private final PathChildrenCache cache;
-    /**
-     * 事件相关数据
-     */
     private final PathChildrenCacheEvent event;
 
     EventOperation(PathChildrenCache cache, PathChildrenCacheEvent event)
@@ -38,10 +29,6 @@ class EventOperation implements Operation
         this.event = event;
     }
 
-    /**
-     * {@code PathChildrenCache#executorService}事件处理线程调用。
-     * 通知事件的监听者们产生了一个事件。
-     */
     @Override
     public void invoke()
     {

@@ -21,8 +21,6 @@ package org.apache.curator.framework.recipes.shared;
 import com.google.common.base.Preconditions;
 
 /**
- * 带有版本号的数据 - 带版本号一般为了CAS更新数据
- *
  * POJO for a version and a value
  */
 public class VersionedValue<T>

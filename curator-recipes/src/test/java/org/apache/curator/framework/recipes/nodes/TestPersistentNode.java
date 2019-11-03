@@ -23,10 +23,13 @@ import org.apache.curator.framework.CuratorFrameworkFactory;
 import org.apache.curator.retry.RetryOneTime;
 import org.apache.curator.test.BaseClassForTests;
 import org.apache.curator.test.Timing;
+import org.apache.curator.test.compatibility.Timing2;
 import org.apache.curator.utils.CloseableUtils;
 import org.apache.zookeeper.CreateMode;
 import org.testng.Assert;
 import org.testng.annotations.Test;
+
+import java.util.List;
 import java.util.concurrent.TimeUnit;
 
 public class TestPersistentNode extends BaseClassForTests
@@ -67,13 +70,14 @@ public class TestPersistentNode extends BaseClassForTests
     {
         final byte[] TEST_DATA = "hey".getBytes();
 
-        Timing timing = new Timing();
+        Timing2 timing = new Timing2();
         PersistentNode pen = null;
         CuratorFramework client = CuratorFrameworkFactory.newClient(server.getConnectString(), timing.session(), timing.connection(), new RetryOneTime(1));
         try
         {
             client.start();
             pen = new PersistentNode(client, CreateMode.PERSISTENT, false, "/test", TEST_DATA);
+            pen.debugWaitMsForBackgroundBeforeClose.set(timing.forSleepingABit().milliseconds());
             pen.start();
             Assert.assertTrue(pen.waitForInitialCreate(timing.milliseconds(), TimeUnit.MILLISECONDS));
             client.close(); // cause session to end - force checks that node is persistent
@@ -129,6 +133,37 @@ public class TestPersistentNode extends BaseClassForTests
             pen.close();
             timing.sleepABit();
             Assert.assertNull(client.checkExists().forPath("/test/one/two"));
+        }
+        finally
+        {
+            CloseableUtils.closeQuietly(pen);
+            CloseableUtils.closeQuietly(client);
+        }
+    }
+    
+    @Test
+    public void testEphemeralSequentialWithProtectionReconnection() throws Exception
+    {
+        Timing timing = new Timing();
+        PersistentNode pen = null;
+        CuratorFramework client = CuratorFrameworkFactory.newClient(server.getConnectString(), timing.session(), timing.connection(), new RetryOneTime(1));
+        try
+        {
+            client.start();
+            client.create().creatingParentsIfNeeded().forPath("/test/one");
+
+            pen = new PersistentNode(client, CreateMode.EPHEMERAL_SEQUENTIAL, true, "/test/one/two", new byte[0]);
+            pen.start();
+            List<String> children = client.getChildren().forPath("/test/one");
+            System.out.println("children before restart: "+children);
+            Assert.assertEquals(1, children.size());
+            server.stop();
+            timing.sleepABit();
+            server.restart();
+            timing.sleepABit();
+            List<String> childrenAfter = client.getChildren().forPath("/test/one");
+            System.out.println("children after restart: "+childrenAfter);
+            Assert.assertEquals(children, childrenAfter, "unexpected znodes: "+childrenAfter);
         }
         finally
         {

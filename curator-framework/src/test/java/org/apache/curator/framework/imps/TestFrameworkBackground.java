@@ -20,6 +20,7 @@
 package org.apache.curator.framework.imps;
 
 import com.google.common.collect.Lists;
+import com.google.common.collect.Queues;
 import org.apache.curator.framework.CuratorFramework;
 import org.apache.curator.framework.CuratorFrameworkFactory;
 import org.apache.curator.framework.api.ACLProvider;
@@ -35,32 +36,58 @@ import org.apache.curator.test.Timing;
 import org.apache.curator.utils.CloseableUtils;
 import org.apache.zookeeper.KeeperException.Code;
 import org.apache.zookeeper.data.ACL;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.testng.Assert;
 import org.testng.annotations.Test;
-import java.util.Arrays;
+
+import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
 public class TestFrameworkBackground extends BaseClassForTests
 {
+    private final Logger log = LoggerFactory.getLogger(getClass());
+
     @Test
     public void testErrorListener() throws Exception
     {
+        //The first call to the ACL provider will return a reasonable
+        //value. The second will throw an error. This is because the ACL
+        //provider is accessed prior to the backgrounding call.
+        final AtomicBoolean aclProviderCalled = new AtomicBoolean(false);
+        
         ACLProvider badAclProvider = new ACLProvider()
         {
             @Override
             public List<ACL> getDefaultAcl()
             {
-                throw new UnsupportedOperationException();
+                if(aclProviderCalled.getAndSet(true))
+                {
+                    throw new UnsupportedOperationException();
+                }
+                else
+                {
+                    return new ArrayList<>();
+                }
             }
 
             @Override
             public List<ACL> getAclForPath(String path)
             {
-                throw new UnsupportedOperationException();
+                if(aclProviderCalled.getAndSet(true))
+                {
+                    throw new UnsupportedOperationException();
+                }
+                else
+                {
+                    return new ArrayList<>();
+                }
             }
         };
         CuratorFramework client = CuratorFrameworkFactory.builder()
@@ -197,24 +224,21 @@ public class TestFrameworkBackground extends BaseClassForTests
         {
             client.start();
 
-            final CountDownLatch latch = new CountDownLatch(3);
-            final List<String> paths = Lists.newArrayList();
-            BackgroundCallback callback = new BackgroundCallback()
+            final BlockingQueue<String> paths = Queues.newLinkedBlockingQueue();
+                BackgroundCallback callback = new BackgroundCallback()
             {
                 @Override
                 public void processResult(CuratorFramework client, CuratorEvent event) throws Exception
                 {
                     paths.add(event.getPath());
-                    latch.countDown();
                 }
             };
             client.create().inBackground(callback).forPath("/one");
+            Assert.assertEquals(paths.poll(timing.milliseconds(), TimeUnit.MILLISECONDS), "/one");
             client.create().inBackground(callback).forPath("/one/two");
+            Assert.assertEquals(paths.poll(timing.milliseconds(), TimeUnit.MILLISECONDS), "/one/two");
             client.create().inBackground(callback).forPath("/one/two/three");
-
-            latch.await();
-
-            Assert.assertEquals(paths, Arrays.asList("/one", "/one/two", "/one/two/three"));
+            Assert.assertEquals(paths.poll(timing.milliseconds(), TimeUnit.MILLISECONDS), "/one/two/three");
         }
         finally
         {

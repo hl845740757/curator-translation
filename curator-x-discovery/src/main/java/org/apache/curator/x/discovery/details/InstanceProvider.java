@@ -22,9 +22,6 @@ import org.apache.curator.x.discovery.ServiceInstance;
 import java.util.List;
 
 /**
- * 实例提供者 - 提供一组可用的服务实例，以使得选择策略可以从它们中选择一个实例。
- * 它的好处是延迟创建，只有需要的时候才会真正的创建。
- *
  * Provides a set of available instances for a service so that a strategy can pick one of them
  */
 public interface InstanceProvider<T>

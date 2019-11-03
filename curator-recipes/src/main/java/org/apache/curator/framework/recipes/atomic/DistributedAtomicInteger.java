@@ -28,20 +28,6 @@ import java.nio.BufferUnderflowException;
 import java.nio.ByteBuffer;
 
 /**
- * 分布式原子变量(Integer)。一个尝试原子方式更新的计数器。
- * <p> 它首先会尝试使用乐观锁的方式更新。如果乐观锁操作失败，将会使用可选的互斥锁{@link InterProcessMutex}，
- * 对于乐观锁和互斥锁，都会使用重试策略{@link RetryPolicy}再次尝试更新。</p>
- *
- * <p>各种更新方法都会返回一个{@link AtomicValue}对象。你必须始终检查{@link AtomicValue#succeeded()}确定操作是否成功。
- * 除{@link #get()}方法外，所有方法都不保证成功。</p>
- *
- * {@link DistributedAtomicInteger}只是{@link DistributedAtomicValue}的一个特化类，最重要的逻辑是负责解析数据。
- * 核心的逻辑其实在{@link DistributedAtomicValue}中。
- *
- * 该类其实就干了两件事：
- * 1. {@link MakeValue} 根据旧值计算新值。
- * 2. {@link AtomicInteger} 提供字节数据与long之间的转换。
- *
  * <p>A counter that attempts atomic increments. It first tries uses optimistic locking. If that fails,
  * an optional {@link InterProcessMutex} is taken. For both optimistic and mutex, a retry policy is used to
  * retry the increment.</p>
@@ -54,9 +40,6 @@ public class DistributedAtomicInteger implements DistributedAtomicNumber<Integer
     private final DistributedAtomicValue        value;
 
     /**
-     * 以仅乐观锁模式创建对象。即：不会升级到互斥锁。
-     * （使用该构造方法创建的该对象只使用乐观锁模式更新数据，不会升级到互斥锁）
-     *
      * Creates in optimistic mode only - i.e. the promotion to a mutex is not done
      *
      * @param client the client
@@ -69,10 +52,6 @@ public class DistributedAtomicInteger implements DistributedAtomicNumber<Integer
     }
 
     /**
-     * 以锁膨胀模式创建对象（乐观锁升级到互斥锁）。
-     * 进行更新操作时，会首先使用乐观锁和给定的重试策略进行第一轮操作尝试。
-     * 如果(乐观锁)更新操作失败，将会使用互斥锁{@link InterProcessMutex}和给定的重试策略进行第二轮操作尝试。
-     *
      * Creates in mutex promotion mode. The optimistic lock will be tried first using
      * the given retry policy. If the increment does not succeed, a {@link InterProcessMutex} will be tried
      * with its own retry policy
@@ -118,8 +97,6 @@ public class DistributedAtomicInteger implements DistributedAtomicNumber<Integer
     }
 
     /**
-     * @see DistributedAtomicNumber#increment()
-     *
      * Add 1 to the current value and return the new value information. Remember to always
      * check {@link AtomicValue#succeeded()}.
      *
@@ -133,8 +110,6 @@ public class DistributedAtomicInteger implements DistributedAtomicNumber<Integer
     }
 
     /**
-     * @see DistributedAtomicNumber#decrement()
-     *
      * Subtract 1 from the current value and return the new value information. Remember to always
      * check {@link AtomicValue#succeeded()}.
      *
@@ -148,8 +123,6 @@ public class DistributedAtomicInteger implements DistributedAtomicNumber<Integer
     }
 
     /**
-     * @see DistributedAtomicNumber#add(Object)
-     *
      * Add delta to the current value and return the new value information. Remember to always
      * check {@link AtomicValue#succeeded()}.
      *
@@ -164,8 +137,6 @@ public class DistributedAtomicInteger implements DistributedAtomicNumber<Integer
     }
 
     /**
-     * @see DistributedAtomicNumber#subtract(Object)
-     *
      * Subtract delta from the current value and return the new value information. Remember to always
      * check {@link AtomicValue#succeeded()}.
      *
@@ -179,12 +150,6 @@ public class DistributedAtomicInteger implements DistributedAtomicNumber<Integer
         return worker(-1 * delta);
     }
 
-    /**
-     * 将int值转换为字节数组。
-     * 更常见的可能是{@link com.google.common.primitives.Ints#toByteArray(int)}
-     * @param newValue int
-     * @return bytes
-     */
     @VisibleForTesting
     byte[] valueToBytes(Integer newValue)
     {
@@ -196,12 +161,6 @@ public class DistributedAtomicInteger implements DistributedAtomicNumber<Integer
         return newData;
     }
 
-    /**
-     * 将字节数组转换为int值;
-     * 更常见的可能是{@link com.google.common.primitives.Ints#fromByteArray(byte[])}
-     * @param data bytes
-     * @return int
-     */
     @VisibleForTesting
     int bytesToValue(byte[] data)
     {
@@ -224,36 +183,25 @@ public class DistributedAtomicInteger implements DistributedAtomicNumber<Integer
         }
     }
 
-    /**
-     * 这是{@link DistributedAtomicInteger}真正有逻辑实现的部分
-     * @param addAmount 增量（差量）
-     * @return 操作结果
-     * @throws Exception zookeeper errors
-     */
     private AtomicValue<Integer>   worker(final Integer addAmount) throws Exception
     {
         Preconditions.checkNotNull(addAmount, "addAmount cannot be null");
-        // 根据旧值计算新值的函数（int值加减操作）
+
         MakeValue               makeValue = new MakeValue()
         {
             @Override
             public byte[] makeFrom(byte[] previous)
             {
-                // 根据前一个值，计算最新的值，加上指定增量得到结果
                 int        previousValue = (previous != null) ? bytesToValue(previous) : 0;
                 int        newValue = previousValue + addAmount;
                 return valueToBytes(newValue);
             }
         };
 
-        // 尝试将节点设置为指定数据
         AtomicValue<byte[]>     result = value.trySet(makeValue);
         return new AtomicInteger(result);
     }
 
-    /**
-     * 原子对象的int类型表示
-     */
     private class AtomicInteger implements AtomicValue<Integer>
     {
         private AtomicValue<byte[]> bytes;

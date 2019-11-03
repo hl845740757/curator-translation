@@ -48,18 +48,32 @@ public class TestWithCluster
             client = CuratorFrameworkFactory.newClient(cluster.getConnectString(), timing.session(), timing.connection(), new ExponentialBackoffRetry(100, 3));
             client.start();
 
+            final CountDownLatch reconnectedLatch = new CountDownLatch(1);
+            ConnectionStateListener listener = new ConnectionStateListener()
+            {
+                @Override
+                public void stateChanged(CuratorFramework client, ConnectionState newState)
+                {
+                    if ( newState == ConnectionState.RECONNECTED )
+                    {
+                        reconnectedLatch.countDown();;
+                    }
+                }
+            };
+            client.getConnectionStateListenable().addListener(listener);
+
             client.create().withMode(CreateMode.EPHEMERAL).forPath("/temp", "value".getBytes());
             Assert.assertNotNull(client.checkExists().forPath("/temp"));
 
             for ( InstanceSpec spec : cluster.getInstances() )
             {
                 cluster.killServer(spec);
-                timing.forWaiting().sleepABit();
+                timing.sleepABit();
                 cluster.restartServer(spec);
                 timing.sleepABit();
             }
 
-            timing.sleepABit();
+            Assert.assertTrue(timing.awaitLatch(reconnectedLatch));
             Assert.assertNotNull(client.checkExists().forPath("/temp"));
         }
         finally
@@ -73,7 +87,7 @@ public class TestWithCluster
     public void     testSplitBrain() throws Exception
     {
         Timing              timing = new Timing();
-        
+
         CuratorFramework    client = null;
         TestingCluster cluster = new TestingCluster(3);
         cluster.start();

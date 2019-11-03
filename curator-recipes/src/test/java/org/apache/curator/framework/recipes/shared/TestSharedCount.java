@@ -23,15 +23,19 @@ import com.google.common.collect.Lists;
 import com.google.common.util.concurrent.ThreadFactoryBuilder;
 import org.apache.curator.framework.CuratorFramework;
 import org.apache.curator.framework.CuratorFrameworkFactory;
+import org.apache.curator.framework.imps.TestCleanState;
 import org.apache.curator.framework.api.BackgroundCallback;
 import org.apache.curator.framework.api.CuratorEvent;
+import org.apache.curator.framework.api.CuratorWatcher;
 import org.apache.curator.framework.state.ConnectionState;
 import org.apache.curator.framework.state.ConnectionStateListener;
 import org.apache.curator.retry.RetryNTimes;
 import org.apache.curator.retry.RetryOneTime;
 import org.apache.curator.test.BaseClassForTests;
 import org.apache.curator.test.Timing;
+import org.apache.curator.test.compatibility.CuratorTestBase;
 import org.apache.curator.utils.CloseableUtils;
+import org.apache.zookeeper.WatchedEvent;
 import org.testng.Assert;
 import org.testng.annotations.Test;
 import java.util.List;
@@ -42,11 +46,12 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.Phaser;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
-public class TestSharedCount extends BaseClassForTests
+public class TestSharedCount extends CuratorTestBase
 {
     @Test
     public void testMultiClients() throws Exception
@@ -74,6 +79,7 @@ public class TestSharedCount extends BaseClassForTests
                                 CuratorFramework client = CuratorFrameworkFactory.newClient(server.getConnectString(), new RetryOneTime(1));
                                 clients.add(client);
                                 client.start();
+                                client.checkExists().forPath("/");  // clear initial connect event
 
                                 SharedCount count = new SharedCount(client, "/count", 10);
                                 counts.add(count);
@@ -117,6 +123,7 @@ public class TestSharedCount extends BaseClassForTests
             CuratorFramework client = CuratorFrameworkFactory.newClient(server.getConnectString(), new RetryOneTime(1));
             clients.add(client);
             client.start();
+            client.checkExists().forPath("/");  // clear initial connect event
 
             Assert.assertTrue(startLatch.await(10, TimeUnit.SECONDS));
 
@@ -152,7 +159,7 @@ public class TestSharedCount extends BaseClassForTests
             }
             for ( CuratorFramework client : clients )
             {
-                CloseableUtils.closeQuietly(client);
+                TestCleanState.closeAndTestClean(client);
             }
         }
     }
@@ -167,15 +174,37 @@ public class TestSharedCount extends BaseClassForTests
             client.start();
             count.start();
 
+            final CountDownLatch setLatch = new CountDownLatch(3);
+            SharedCountListener listener = new SharedCountListener()
+            {
+                @Override
+                public void countHasChanged(SharedCountReader sharedCount, int newCount) throws Exception
+                {
+                    setLatch.countDown();
+                }
+
+                @Override
+                public void stateChanged(CuratorFramework client, ConnectionState newState)
+                {
+                    // nop
+                }
+            };
+            count.addListener(listener);
+
             Assert.assertTrue(count.trySetCount(1));
+            timing.sleepABit();
             Assert.assertTrue(count.trySetCount(2));
+            timing.sleepABit();
             Assert.assertTrue(count.trySetCount(10));
+            timing.sleepABit();
             Assert.assertEquals(count.getCount(), 10);
+
+            Assert.assertTrue(new Timing().awaitLatch(setLatch));
         }
         finally
         {
             CloseableUtils.closeQuietly(count);
-            CloseableUtils.closeQuietly(client);
+            TestCleanState.closeAndTestClean(client);
         }
     }
 
@@ -220,7 +249,7 @@ public class TestSharedCount extends BaseClassForTests
         finally
         {
             CloseableUtils.closeQuietly(count);
-            CloseableUtils.closeQuietly(client);
+            TestCleanState.closeAndTestClean(client);
         }
     }
 
@@ -246,19 +275,37 @@ public class TestSharedCount extends BaseClassForTests
             Assert.assertTrue(count2.trySetCount(versionedValue, 20));
             timing.sleepABit();
 
+            final CountDownLatch setLatch = new CountDownLatch(2);
+            SharedCountListener listener = new SharedCountListener()
+            {
+                @Override
+                public void countHasChanged(SharedCountReader sharedCount, int newCount) throws Exception
+                {
+                    setLatch.countDown();
+                }
+
+                @Override
+                public void stateChanged(CuratorFramework client, ConnectionState newState)
+                {
+                    // nop
+                }
+            };
+            count1.addListener(listener);
             VersionedValue<Integer> versionedValue1 = count1.getVersionedValue();
             VersionedValue<Integer> versionedValue2 = count2.getVersionedValue();
             Assert.assertTrue(count2.trySetCount(versionedValue2, 30));
             Assert.assertFalse(count1.trySetCount(versionedValue1, 40));
+
             versionedValue1 = count1.getVersionedValue();
             Assert.assertTrue(count1.trySetCount(versionedValue1, 40));
+            Assert.assertTrue(timing.awaitLatch(setLatch));
         }
         finally
         {
             CloseableUtils.closeQuietly(count2);
             CloseableUtils.closeQuietly(count1);
-            CloseableUtils.closeQuietly(client2);
-            CloseableUtils.closeQuietly(client1);
+            TestCleanState.closeAndTestClean(client2);
+            TestCleanState.closeAndTestClean(client1);
         }
     }
 
@@ -320,7 +367,7 @@ public class TestSharedCount extends BaseClassForTests
         finally
         {
             CloseableUtils.closeQuietly(sharedCount);
-            CloseableUtils.closeQuietly(curatorFramework);
+            TestCleanState.closeAndTestClean(curatorFramework);
         }
     }
 
@@ -368,6 +415,7 @@ public class TestSharedCount extends BaseClassForTests
 
             server.restart();
             Assert.assertTrue(getReconnectEvent.await(2, TimeUnit.SECONDS));
+            Assert.assertEquals(numChangeEvents.get(), 1);
 
             sharedCount.trySetCount(sharedCount.getVersionedValue(), 12);
 
@@ -381,12 +429,121 @@ public class TestSharedCount extends BaseClassForTests
             }).forPath("/count");
             flushDone.await(5, TimeUnit.SECONDS);
 
-            Assert.assertEquals(2, numChangeEvents.get());
+            // CURATOR-311: when a Curator client's state became RECONNECTED, countHasChanged method is called back
+            // because the Curator client calls readValueAndNotifyListenersInBackground in SharedValue#ConnectionStateListener#stateChanged.
+            Assert.assertEquals(numChangeEvents.get(), 3);
         }
         finally
         {
             CloseableUtils.closeQuietly(sharedCount);
-            CloseableUtils.closeQuietly(curatorFramework);
+            TestCleanState.closeAndTestClean(curatorFramework);
         }
     }
+
+
+    @Test
+    public void testDisconnectReconnectWithMultipleClients() throws Exception
+    {
+        Timing timing = new Timing();
+        CuratorFramework curatorFramework1 = CuratorFrameworkFactory.newClient(server.getConnectString(), new RetryNTimes(10, 500));
+        CuratorFramework curatorFramework2 = CuratorFrameworkFactory.newClient(server.getConnectString(), new RetryNTimes(10, 500));
+
+        curatorFramework1.start();
+        curatorFramework1.checkExists().forPath("/");   // clear initial connect events
+        curatorFramework2.start();
+        curatorFramework2.checkExists().forPath("/");   // clear initial connect events
+
+        final String sharedCountPath = "/count";
+        final int initialCount = 10;
+        SharedCount sharedCount1 = new SharedCount(curatorFramework1, sharedCountPath, initialCount);
+        SharedCount sharedCountWithFaultyWatcher = createSharedCountWithFaultyWatcher(curatorFramework2, sharedCountPath, initialCount);
+
+        class MySharedCountListener implements SharedCountListener
+        {
+            final public Phaser gotSuspendEvent = new Phaser(1);
+            final public Phaser gotChangeEvent = new Phaser(1);
+            final public Phaser getReconnectEvent = new Phaser(1);
+            final public AtomicInteger numChangeEvents = new AtomicInteger(0);
+
+            @Override
+            public void countHasChanged(SharedCountReader sharedCount, int newCount) throws Exception
+            {
+                numChangeEvents.incrementAndGet();
+                gotChangeEvent.arrive();
+            }
+
+            @Override
+            public void stateChanged(CuratorFramework client, ConnectionState newState)
+            {
+                if (newState == ConnectionState.SUSPENDED) {
+                    gotSuspendEvent.arrive();
+                } else if (newState == ConnectionState.RECONNECTED) {
+                    getReconnectEvent.arrive();
+                }
+            }
+        }
+
+        MySharedCountListener listener1 = new MySharedCountListener();
+        sharedCount1.addListener(listener1);
+        sharedCount1.start();
+        MySharedCountListener listener2 = new MySharedCountListener();
+        sharedCountWithFaultyWatcher.addListener(listener2);
+
+        try
+        {
+            sharedCount1.setCount(12);
+            Assert.assertEquals(listener1.gotChangeEvent.awaitAdvanceInterruptibly(0, timing.seconds(), TimeUnit.SECONDS), 1);
+            Assert.assertEquals(sharedCount1.getCount(), 12);
+
+            Assert.assertEquals(sharedCountWithFaultyWatcher.getCount(), 10);
+            // new counter with faultyWatcher start
+            sharedCountWithFaultyWatcher.start();
+
+            for (int i = 0; i < 10; i++) {
+                sharedCount1.setCount(13 + i);
+                Assert.assertEquals(sharedCount1.getCount(), 13 + i);
+
+                server.restart();
+
+                Assert.assertEquals(listener2.getReconnectEvent.awaitAdvanceInterruptibly(i, timing.forWaiting().seconds(), TimeUnit.SECONDS), i + 1);
+                // CURATOR-311 introduces to Curator's client reading server's shared count value
+                // when client's state gets ConnectionState.RECONNECTED. Following tests ensures that.
+                Assert.assertEquals(listener2.gotChangeEvent.awaitAdvanceInterruptibly(i, timing.forWaiting().seconds(), TimeUnit.SECONDS), i + 1);
+                Assert.assertEquals(sharedCountWithFaultyWatcher.getCount(), 13 + i);
+            }
+        }
+        finally
+        {
+            CloseableUtils.closeQuietly(sharedCount1);
+            CloseableUtils.closeQuietly(curatorFramework1);
+            CloseableUtils.closeQuietly(sharedCountWithFaultyWatcher);
+            CloseableUtils.closeQuietly(curatorFramework2);
+        }
+    }
+
+    private SharedCount createSharedCountWithFaultyWatcher(CuratorFramework curatorFramework, String path, int val) {
+
+        final CuratorWatcher faultyWatcher = new CuratorWatcher() {
+            @Override
+            public void process(WatchedEvent event) throws Exception {
+                // everything will be ignored
+            }
+        };
+
+        class FaultySharedValue extends SharedValue {
+            public FaultySharedValue(CuratorFramework client, String path, byte[] seedValue) {
+                super(client.newWatcherRemoveCuratorFramework(), path, seedValue, faultyWatcher);
+            }
+        };
+
+        final SharedValue faultySharedValue = new FaultySharedValue(curatorFramework, path, SharedCount.toBytes(val));
+        class FaultySharedCount extends SharedCount {
+            public FaultySharedCount(CuratorFramework client, String path, int val) {
+                super(client, path, faultySharedValue);
+            }
+        };
+        return new FaultySharedCount(curatorFramework, path, val);
+    }
+
+
 }

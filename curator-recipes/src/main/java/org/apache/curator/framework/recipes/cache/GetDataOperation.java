@@ -20,18 +20,9 @@ package org.apache.curator.framework.recipes.cache;
 
 import org.apache.curator.utils.PathUtils;
 
-/**
- * 获取数据操作，用于后台拉取数据。
- */
 class GetDataOperation implements Operation
 {
-    /**
-     * 操作(命令)的接收者，真正执行逻辑的对象。
-     */
     private final PathChildrenCache cache;
-    /**
-     * 待拉取数据的节点
-     */
     private final String fullPath;
 
     GetDataOperation(PathChildrenCache cache, String fullPath)

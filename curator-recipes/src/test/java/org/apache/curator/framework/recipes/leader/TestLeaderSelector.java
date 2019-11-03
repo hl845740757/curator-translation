@@ -20,19 +20,24 @@
 package org.apache.curator.framework.recipes.leader;
 
 import com.google.common.collect.Lists;
+import com.google.common.collect.Queues;
 import com.google.common.collect.Sets;
 import org.apache.curator.framework.CuratorFramework;
 import org.apache.curator.framework.CuratorFrameworkFactory;
 import org.apache.curator.framework.state.ConnectionState;
 import org.apache.curator.framework.state.ConnectionStateListener;
+import org.apache.curator.framework.state.SessionConnectionStateErrorPolicy;
+import org.apache.curator.framework.state.StandardConnectionStateErrorPolicy;
 import org.apache.curator.retry.RetryOneTime;
 import org.apache.curator.test.BaseClassForTests;
-import org.apache.curator.test.KillSession;
 import org.apache.curator.test.TestingServer;
 import org.apache.curator.test.Timing;
+import org.apache.curator.test.compatibility.Timing2;
 import org.apache.curator.utils.CloseableUtils;
+import org.apache.curator.utils.Compatibility;
 import org.testng.Assert;
 import org.testng.annotations.Test;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.ArrayBlockingQueue;
@@ -50,9 +55,144 @@ public class TestLeaderSelector extends BaseClassForTests
     private static final String PATH_NAME = "/one/two/me";
 
     @Test
+    public void testInterruption() throws Exception
+    {
+        Timing2 timing = new Timing2();
+        LeaderSelector selector = null;
+        CuratorFramework client = CuratorFrameworkFactory.newClient(server.getConnectString(), new RetryOneTime(1));
+        try
+        {
+            client.start();
+
+            CountDownLatch exitLatch = new CountDownLatch(1);
+            BlockingQueue<Thread> threadExchange = new ArrayBlockingQueue<>(1);
+            LeaderSelectorListener listener = new LeaderSelectorListenerAdapter()
+            {
+                @Override
+                public void takeLeadership(CuratorFramework client) throws Exception
+                {
+                    threadExchange.put(Thread.currentThread());
+                    try
+                    {
+                        Thread.currentThread().join();
+                    }
+                    finally
+                    {
+                        exitLatch.countDown();
+                    }
+                }
+            };
+            selector = new LeaderSelector(client, PATH_NAME, listener);
+            selector.failedMutexReleaseCount = new AtomicInteger();
+            selector.start();
+            Thread leaderThread = timing.takeFromQueue(threadExchange);
+            leaderThread.interrupt();
+            Assert.assertTrue(timing.awaitLatch(exitLatch));
+            timing.sleepABit(); // wait for leader selector to clear nodes
+            Assert.assertEquals(0, selector.failedMutexReleaseCount.get());
+        }
+        finally
+        {
+            CloseableUtils.closeQuietly(selector);
+            CloseableUtils.closeQuietly(client);
+        }
+    }
+
+    @Test
+    public void testErrorPolicies() throws Exception
+    {
+        Timing2 timing = new Timing2();
+        LeaderSelector selector = null;
+        CuratorFramework client = CuratorFrameworkFactory
+            .builder()
+            .connectString(server.getConnectString())
+            .connectionTimeoutMs(timing.connection())
+            .sessionTimeoutMs(timing.session())
+            .retryPolicy(new RetryOneTime(1))
+            .connectionStateErrorPolicy(new StandardConnectionStateErrorPolicy())
+            .build();
+        try
+        {
+            final BlockingQueue<String> changes = Queues.newLinkedBlockingQueue();
+
+            ConnectionStateListener stateListener = new ConnectionStateListener()
+            {
+                @Override
+                public void stateChanged(CuratorFramework client, ConnectionState newState)
+                {
+                    changes.add(newState.name());
+                }
+            };
+            client.getConnectionStateListenable().addListener(stateListener);
+            client.start();
+            LeaderSelectorListener listener = new LeaderSelectorListenerAdapter()
+            {
+                @Override
+                public void takeLeadership(CuratorFramework client) throws Exception
+                {
+                    changes.add("leader");
+                    try
+                    {
+                        Thread.currentThread().join();
+                    }
+                    catch ( InterruptedException e )
+                    {
+                        changes.add("release");
+                        Thread.currentThread().interrupt();
+                    }
+                }
+            };
+            selector = new LeaderSelector(client, "/test", listener);
+            selector.start();
+
+            Assert.assertEquals(changes.poll(timing.forWaiting().milliseconds(), TimeUnit.MILLISECONDS), ConnectionState.CONNECTED.name());
+            Assert.assertEquals(changes.poll(timing.forWaiting().milliseconds(), TimeUnit.MILLISECONDS), "leader");
+            server.close();
+            List<String> next = Lists.newArrayList();
+            next.add(changes.poll(timing.forSessionSleep().milliseconds(), TimeUnit.MILLISECONDS));
+            next.add(changes.poll(timing.forSessionSleep().milliseconds(), TimeUnit.MILLISECONDS));
+            Assert.assertTrue(next.equals(Arrays.asList(ConnectionState.SUSPENDED.name(), "release")) || next.equals(Arrays.asList("release", ConnectionState.SUSPENDED.name())), next.toString());
+            Assert.assertEquals(changes.poll(timing.forSessionSleep().milliseconds(), TimeUnit.MILLISECONDS), ConnectionState.LOST.name());
+
+            selector.close();
+            client.close();
+            timing.sleepABit();
+            changes.clear();
+
+            server = new TestingServer();
+            client = CuratorFrameworkFactory
+                .builder()
+                .connectString(server.getConnectString())
+                .connectionTimeoutMs(timing.connection())
+                .sessionTimeoutMs(timing.session())
+                .retryPolicy(new RetryOneTime(1))
+                .connectionStateErrorPolicy(new SessionConnectionStateErrorPolicy())
+                .build();
+            client.getConnectionStateListenable().addListener(stateListener);
+            client.start();
+            selector = new LeaderSelector(client, "/test", listener);
+            selector.start();
+
+            Assert.assertEquals(changes.poll(timing.forWaiting().milliseconds(), TimeUnit.MILLISECONDS), ConnectionState.CONNECTED.name());
+            Assert.assertEquals(changes.poll(timing.forWaiting().milliseconds(), TimeUnit.MILLISECONDS), "leader");
+            server.stop();
+            Assert.assertEquals(changes.poll(timing.forWaiting().milliseconds(), TimeUnit.MILLISECONDS), ConnectionState.SUSPENDED.name());
+            next = Lists.newArrayList();
+            next.add(changes.poll(timing.forSessionSleep().milliseconds(), TimeUnit.MILLISECONDS));
+            next.add(changes.poll(timing.forSessionSleep().milliseconds(), TimeUnit.MILLISECONDS));
+            Assert.assertTrue(next.equals(Arrays.asList(ConnectionState.LOST.name(), "release")) || next.equals(Arrays.asList("release", ConnectionState.LOST.name())), next.toString());
+        }
+        finally
+        {
+            CloseableUtils.closeQuietly(selector);
+            CloseableUtils.closeQuietly(client);
+        }
+    }
+
+    @Test
     public void testLeaderNodeDeleteOnInterrupt() throws Exception
     {
-        Timing timing = new Timing();
+        Timing2 timing = new Timing2();
         LeaderSelector selector = null;
         CuratorFramework client = null;
         try
@@ -98,7 +238,7 @@ public class TestLeaderSelector extends BaseClassForTests
             selector = new LeaderSelector(client, "/leader", listener);
             selector.start();
 
-            Thread leaderThread = queue.take();
+            Thread leaderThread = timing.takeFromQueue(queue);
             server.stop();
             leaderThread.interrupt();
             server.restart();
@@ -391,7 +531,7 @@ public class TestLeaderSelector extends BaseClassForTests
 
             Assert.assertTrue(timing.acquireSemaphore(semaphore, 1));
 
-            KillSession.kill(client.getZookeeperClient().getZooKeeper(), server.getConnectString());
+            Compatibility.injectSessionExpiration(client.getZookeeperClient().getZooKeeper());
 
             Assert.assertTrue(timing.awaitLatch(interruptedLatch));
             timing.sleepABit();

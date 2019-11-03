@@ -22,7 +22,6 @@ import org.apache.curator.framework.CuratorFramework;
 import java.util.concurrent.ThreadFactory;
 
 /**
- * 已不推荐使用，不进行注释。
  * Controls which data is cached
  *
  * @deprecated no longer used. Instead use either {@link PathChildrenCache#PathChildrenCache(CuratorFramework, String, boolean)}

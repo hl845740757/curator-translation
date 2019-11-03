@@ -32,9 +32,6 @@ import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
- * ExecutorService上的装饰，用于跟踪创建的{@link Future}，并提供关闭通过此类创建的{@link Future}的方法。
- * 这个对象其实最好不共享，使用缓存的时候共享线程池就好。
- *
  * Decoration on an ExecutorService that tracks created futures and provides
  * a method to close futures created via this class
  */
@@ -42,14 +39,7 @@ public class CloseableExecutorService implements Closeable
 {
     private final Logger log = LoggerFactory.getLogger(CloseableExecutorService.class);
     private final Set<Future<?>> futures = Sets.newSetFromMap(Maps.<Future<?>, Boolean>newConcurrentMap());
-    /**
-     * 被装饰(代理)的executaor
-     */
     private final ExecutorService executorService;
-    /**
-     * 当调用{@link #close()}关闭{@link CloseableExecutorService}的时候，使用关闭被装饰的{@link ExecutorService}。
-     * (共享线程池的话，这里需要设置位false，默认是false)
-     */
     private final boolean shutdownOnClose;
     protected final AtomicBoolean isOpen = new AtomicBoolean(true);
 

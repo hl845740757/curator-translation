@@ -33,7 +33,7 @@ import java.util.List;
 import java.util.concurrent.Callable;
 import java.util.concurrent.Executor;
 
-class GetACLBuilderImpl implements GetACLBuilder, BackgroundOperation<String>, ErrorListenerPathable<List<ACL>>
+public class GetACLBuilderImpl implements GetACLBuilder, BackgroundOperation<String>, ErrorListenerPathable<List<ACL>>
 {
     private final CuratorFrameworkImpl client;
 
@@ -45,6 +45,13 @@ class GetACLBuilderImpl implements GetACLBuilder, BackgroundOperation<String>, E
         this.client = client;
         backgrounding = new Backgrounding();
         responseStat = new Stat();
+    }
+
+    public GetACLBuilderImpl(CuratorFrameworkImpl client, Backgrounding backgrounding, Stat responseStat)
+    {
+        this.client = client;
+        this.backgrounding = backgrounding;
+        this.responseStat = responseStat;
     }
 
     @Override
@@ -115,7 +122,7 @@ class GetACLBuilderImpl implements GetACLBuilder, BackgroundOperation<String>, E
                 public void processResult(int rc, String path, Object ctx, List<ACL> acl, Stat stat)
                 {
                     trace.setReturnCode(rc).setPath(path).setStat(stat).commit();
-                    CuratorEventImpl event = new CuratorEventImpl(client, CuratorEventType.GET_ACL, rc, path, null, ctx, stat, null, null, null, acl);
+                    CuratorEventImpl event = new CuratorEventImpl(client, CuratorEventType.GET_ACL, rc, path, null, ctx, stat, null, null, null, acl, null);
                     client.processBackgroundOperation(operationAndData, event);
                 }
             };
@@ -123,7 +130,7 @@ class GetACLBuilderImpl implements GetACLBuilder, BackgroundOperation<String>, E
         }
         catch ( Throwable e )
         {
-            backgrounding.checkError(e);
+            backgrounding.checkError(e, null);
         }
     }
 
@@ -135,7 +142,7 @@ class GetACLBuilderImpl implements GetACLBuilder, BackgroundOperation<String>, E
         List<ACL>       result = null;
         if ( backgrounding.inBackground() )
         {
-            client.processBackgroundOperation(new OperationAndData<String>(this, path, backgrounding.getCallback(), null, backgrounding.getContext()), null);
+            client.processBackgroundOperation(new OperationAndData<String>(this, path, backgrounding.getCallback(), null, backgrounding.getContext(), null), null);
         }
         else
         {

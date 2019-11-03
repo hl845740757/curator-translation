@@ -25,8 +25,6 @@ import java.util.List;
 import java.util.Random;
 
 /**
- * 随机策略 - 从服务列表中，随机一个实例用于服务。
- *
  * This strategy always picks a random instance from the list
  */
 public class RandomStrategy<T> implements ProviderStrategy<T>

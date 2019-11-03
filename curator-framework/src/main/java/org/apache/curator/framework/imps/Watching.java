@@ -16,47 +16,96 @@
  * specific language governing permissions and limitations
  * under the License.
  */
+
 package org.apache.curator.framework.imps;
 
 import org.apache.curator.framework.api.CuratorWatcher;
+import org.apache.zookeeper.KeeperException;
 import org.apache.zookeeper.Watcher;
 
 class Watching
 {
-    private final Watcher       watcher;
-    private final boolean       watched;
+    private final Watcher watcher;
+    private final CuratorWatcher curatorWatcher;
+    private final boolean watched;
+    private final CuratorFrameworkImpl client;
+    private NamespaceWatcher namespaceWatcher;
 
-    Watching(boolean watched)
+    Watching(CuratorFrameworkImpl client, boolean watched)
     {
+        this.client = client;
         this.watcher = null;
+        this.curatorWatcher = null;
         this.watched = watched;
     }
 
     Watching(CuratorFrameworkImpl client, Watcher watcher)
     {
-        this.watcher = (watcher != null) ? client.getNamespaceWatcherMap().getNamespaceWatcher(watcher) : null;
+        this.client = client;
+        this.watcher = watcher;
+        this.curatorWatcher = null;
         this.watched = false;
     }
 
     Watching(CuratorFrameworkImpl client, CuratorWatcher watcher)
     {
-        this.watcher = (watcher != null) ? client.getNamespaceWatcherMap().getNamespaceWatcher(watcher) : null;
+        this.client = client;
+        this.watcher = null;
+        this.curatorWatcher = watcher;
         this.watched = false;
     }
 
-    Watching()
+    Watching(CuratorFrameworkImpl client)
     {
+        this.client = client;
         watcher = null;
         watched = false;
+        curatorWatcher = null;
     }
 
-    Watcher getWatcher()
+    Watcher getWatcher(String unfixedPath)
     {
-        return watcher;
+        namespaceWatcher = null;
+        if ( watcher != null )
+        {
+            namespaceWatcher = new NamespaceWatcher(client, this.watcher, unfixedPath);
+        }
+        else if ( curatorWatcher != null )
+        {
+            namespaceWatcher = new NamespaceWatcher(client, curatorWatcher, unfixedPath);
+        }
+
+        return namespaceWatcher;
+    }
+
+    boolean hasWatcher()
+    {
+        return (watcher != null) || (curatorWatcher != null);
     }
 
     boolean isWatched()
     {
         return watched;
+    }
+
+    void commitWatcher(int rc, boolean isExists)
+    {
+        boolean doCommit = false;
+        if ( isExists )
+        {
+            doCommit = ((rc == KeeperException.Code.OK.intValue()) || (rc == KeeperException.Code.NONODE.intValue()));
+        }
+        else
+        {
+            doCommit = (rc == KeeperException.Code.OK.intValue());
+        }
+
+        if ( doCommit && (namespaceWatcher != null) )
+        {
+            if ( client.getWatcherRemovalManager() != null )
+            {
+                client.getWatcherRemovalManager().add(namespaceWatcher);
+            }
+        }
     }
 }

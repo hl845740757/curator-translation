@@ -19,8 +19,6 @@
 package org.apache.curator.framework.recipes.cache;
 
 /**
- * {@link TreeCacheSelector}的默认实现，返回所有的子节点
- *
  * Default TreeCache selector - returns true for all methods
  */
 public class DefaultTreeCacheSelector implements TreeCacheSelector

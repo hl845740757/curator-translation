@@ -23,11 +23,11 @@
     <parent>
         <groupId>org.apache.curator</groupId>
         <artifactId>apache-curator</artifactId>
-        <version>2.13.0</version>
+        <version>4.2.0</version>
     </parent>
 
     <artifactId>curator-client</artifactId>
-    <version>2.13.0</version>
+    <version>4.2.0</version>
     <packaging>bundle</packaging>
 
     <name>Curator Client</name>
@@ -100,6 +100,8 @@
                             <artifactSet>
                                 <includes>
                                     <include>com.google.guava:guava</include>
+                                    <include>com.google.guava:listenablefuture</include>
+                                    <include>com.google.guava:failureaccess</include>
                                 </includes>
                             </artifactSet>
                             <filters>

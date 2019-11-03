@@ -22,7 +22,6 @@ package org.apache.curator.framework.imps;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Function;
 import com.google.common.base.Preconditions;
-import com.google.common.base.Throwables;
 import com.google.common.collect.ImmutableList;
 import org.apache.curator.CuratorConnectionLossException;
 import org.apache.curator.CuratorZookeeperClient;
@@ -31,11 +30,16 @@ import org.apache.curator.drivers.OperationTrace;
 import org.apache.curator.framework.AuthInfo;
 import org.apache.curator.framework.CuratorFramework;
 import org.apache.curator.framework.CuratorFrameworkFactory;
+import org.apache.curator.framework.WatcherRemoveCuratorFramework;
 import org.apache.curator.framework.api.*;
+import org.apache.curator.framework.api.transaction.CuratorMultiTransaction;
 import org.apache.curator.framework.api.transaction.CuratorTransaction;
+import org.apache.curator.framework.api.transaction.TransactionOp;
 import org.apache.curator.framework.listen.Listenable;
 import org.apache.curator.framework.listen.ListenerContainer;
+import org.apache.curator.framework.schema.SchemaSet;
 import org.apache.curator.framework.state.ConnectionState;
+import org.apache.curator.framework.state.ConnectionStateErrorPolicy;
 import org.apache.curator.framework.state.ConnectionStateListener;
 import org.apache.curator.framework.state.ConnectionStateManager;
 import org.apache.curator.utils.DebugUtils;
@@ -47,18 +51,16 @@ import org.apache.zookeeper.KeeperException;
 import org.apache.zookeeper.WatchedEvent;
 import org.apache.zookeeper.Watcher;
 import org.apache.zookeeper.ZooKeeper;
+import org.apache.zookeeper.server.quorum.flexible.QuorumVerifier;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.List;
-import java.util.concurrent.BlockingQueue;
-import java.util.concurrent.Callable;
-import java.util.concurrent.DelayQueue;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.ThreadFactory;
-import java.util.concurrent.TimeUnit;
+import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
 public class CuratorFrameworkImpl implements CuratorFramework
@@ -70,16 +72,24 @@ public class CuratorFrameworkImpl implements CuratorFramework
     private final ThreadFactory threadFactory;
     private final int maxCloseWaitMs;
     private final BlockingQueue<OperationAndData<?>> backgroundOperations;
+    private final BlockingQueue<OperationAndData<?>> forcedSleepOperations;
     private final NamespaceImpl namespace;
     private final ConnectionStateManager connectionStateManager;
     private final List<AuthInfo> authInfos;
     private final byte[] defaultData;
     private final FailedDeleteManager failedDeleteManager;
+    private final FailedRemoveWatchManager failedRemoveWatcherManager;
     private final CompressionProvider compressionProvider;
     private final ACLProvider aclProvider;
     private final NamespaceFacadeCache namespaceFacadeCache;
-    private final NamespaceWatcherMap namespaceWatcherMap = new NamespaceWatcherMap(this);
     private final boolean useContainerParentsIfAvailable;
+    private final ConnectionStateErrorPolicy connectionStateErrorPolicy;
+    private final AtomicLong currentInstanceIndex = new AtomicLong(-1);
+    private final InternalConnectionHandler internalConnectionHandler;
+    private final EnsembleTracker ensembleTracker;
+    private final SchemaSet schemaSet;
+    private final boolean zk34CompatibilityMode;
+    private final Executor runSafeService;
 
     private volatile ExecutorService executorService;
     private final AtomicBoolean logAsErrorConnectionErrors = new AtomicBoolean(false);
@@ -100,34 +110,69 @@ public class CuratorFrameworkImpl implements CuratorFramework
     public CuratorFrameworkImpl(CuratorFrameworkFactory.Builder builder)
     {
         ZookeeperFactory localZookeeperFactory = makeZookeeperFactory(builder.getZookeeperFactory());
-        this.client = new CuratorZookeeperClient(localZookeeperFactory, builder.getEnsembleProvider(), builder.getSessionTimeoutMs(), builder.getConnectionTimeoutMs(), new Watcher()
-        {
-            @Override
-            public void process(WatchedEvent watchedEvent)
-            {
-                CuratorEvent event = new CuratorEventImpl(CuratorFrameworkImpl.this, CuratorEventType.WATCHED, watchedEvent.getState().getIntValue(), unfixForNamespace(watchedEvent.getPath()), null, null, null, null, null, watchedEvent, null);
-                processEvent(event);
-            }
-        }, builder.getRetryPolicy(), builder.canBeReadOnly());
+        this.client = new CuratorZookeeperClient
+            (
+                localZookeeperFactory,
+                builder.getEnsembleProvider(),
+                builder.getSessionTimeoutMs(),
+                builder.getConnectionTimeoutMs(),
+                builder.getWaitForShutdownTimeoutMs(),
+                new Watcher()
+                {
+                    @Override
+                    public void process(WatchedEvent watchedEvent)
+                    {
+                        CuratorEvent event = new CuratorEventImpl(CuratorFrameworkImpl.this, CuratorEventType.WATCHED, watchedEvent.getState().getIntValue(), unfixForNamespace(watchedEvent.getPath()), null, null, null, null, null, watchedEvent, null, null);
+                        processEvent(event);
+                    }
+                },
+                builder.getRetryPolicy(),
+                builder.canBeReadOnly(),
+                builder.getConnectionHandlingPolicy()
+            );
 
+        internalConnectionHandler = new StandardInternalConnectionHandler();
         listeners = new ListenerContainer<CuratorListener>();
         unhandledErrorListeners = new ListenerContainer<UnhandledErrorListener>();
         backgroundOperations = new DelayQueue<OperationAndData<?>>();
+        forcedSleepOperations = new LinkedBlockingQueue<>();
         namespace = new NamespaceImpl(this, builder.getNamespace());
         threadFactory = getThreadFactory(builder);
         maxCloseWaitMs = builder.getMaxCloseWaitMs();
-        connectionStateManager = new ConnectionStateManager(this, builder.getThreadFactory());
+        connectionStateManager = new ConnectionStateManager(this, builder.getThreadFactory(), builder.getSessionTimeoutMs(), builder.getConnectionHandlingPolicy().getSimulatedSessionExpirationPercent(), builder.getConnectionStateListenerDecorator());
         compressionProvider = builder.getCompressionProvider();
         aclProvider = builder.getAclProvider();
         state = new AtomicReference<CuratorFrameworkState>(CuratorFrameworkState.LATENT);
         useContainerParentsIfAvailable = builder.useContainerParentsIfAvailable();
+        connectionStateErrorPolicy = Preconditions.checkNotNull(builder.getConnectionStateErrorPolicy(), "errorPolicy cannot be null");
+        schemaSet = Preconditions.checkNotNull(builder.getSchemaSet(), "schemaSet cannot be null");
+        zk34CompatibilityMode = builder.isZk34CompatibilityMode();
 
         byte[] builderDefaultData = builder.getDefaultData();
         defaultData = (builderDefaultData != null) ? Arrays.copyOf(builderDefaultData, builderDefaultData.length) : new byte[0];
         authInfos = buildAuths(builder);
 
         failedDeleteManager = new FailedDeleteManager(this);
+        failedRemoveWatcherManager = new FailedRemoveWatchManager(this);
         namespaceFacadeCache = new NamespaceFacadeCache(this);
+
+        ensembleTracker = zk34CompatibilityMode ? null : new EnsembleTracker(this, builder.getEnsembleProvider());
+
+        runSafeService = makeRunSafeService(builder);
+    }
+
+    private Executor makeRunSafeService(CuratorFrameworkFactory.Builder builder)
+    {
+        if ( builder.getRunSafeService() != null )
+        {
+            return builder.getRunSafeService();
+        }
+        ThreadFactory threadFactory = builder.getThreadFactory();
+        if ( threadFactory == null )
+        {
+            threadFactory = ThreadUtils.newThreadFactory("SafeNotifyService");
+        }
+        return Executors.newSingleThreadExecutor(threadFactory);
     }
 
     private List<AuthInfo> buildAuths(CuratorFrameworkFactory.Builder builder)
@@ -138,6 +183,24 @@ public class CuratorFrameworkImpl implements CuratorFramework
             builder1.addAll(builder.getAuthInfos());
         }
         return builder1.build();
+    }
+
+    @Override
+    public CompletableFuture<Void> runSafe(Runnable runnable)
+    {
+        return CompletableFuture.runAsync(runnable, runSafeService);
+    }
+
+    @Override
+    public WatcherRemoveCuratorFramework newWatcherRemoveCuratorFramework()
+    {
+        return new WatcherRemovalFacade(this);
+    }
+
+    @Override
+    public QuorumVerifier getCurrentConfig()
+    {
+        return (ensembleTracker != null) ? ensembleTracker.getCurrentConfig() : null;
     }
 
     private ZookeeperFactory makeZookeeperFactory(final ZookeeperFactory actualZookeeperFactory)
@@ -176,9 +239,11 @@ public class CuratorFrameworkImpl implements CuratorFramework
         threadFactory = parent.threadFactory;
         maxCloseWaitMs = parent.maxCloseWaitMs;
         backgroundOperations = parent.backgroundOperations;
+        forcedSleepOperations = parent.forcedSleepOperations;
         connectionStateManager = parent.connectionStateManager;
         defaultData = parent.defaultData;
         failedDeleteManager = parent.failedDeleteManager;
+        failedRemoveWatcherManager = parent.failedRemoveWatcherManager;
         compressionProvider = parent.compressionProvider;
         aclProvider = parent.aclProvider;
         namespaceFacadeCache = parent.namespaceFacadeCache;
@@ -186,6 +251,12 @@ public class CuratorFrameworkImpl implements CuratorFramework
         state = parent.state;
         authInfos = parent.authInfos;
         useContainerParentsIfAvailable = parent.useContainerParentsIfAvailable;
+        connectionStateErrorPolicy = parent.connectionStateErrorPolicy;
+        internalConnectionHandler = parent.internalConnectionHandler;
+        schemaSet = parent.schemaSet;
+        zk34CompatibilityMode = parent.zk34CompatibilityMode;
+        ensembleTracker = null;
+        runSafeService = parent.runSafeService;
     }
 
     @Override
@@ -197,11 +268,7 @@ public class CuratorFrameworkImpl implements CuratorFramework
     @Override
     public void clearWatcherReferences(Watcher watcher)
     {
-        NamespaceWatcher namespaceWatcher = namespaceWatcherMap.remove(watcher);
-        if ( namespaceWatcher != null )
-        {
-            namespaceWatcher.close();
-        }
+        // NOP
     }
 
     @Override
@@ -230,6 +297,12 @@ public class CuratorFrameworkImpl implements CuratorFramework
     }
 
     @Override
+    public ConnectionStateErrorPolicy getConnectionStateErrorPolicy()
+    {
+        return connectionStateErrorPolicy;
+    }
+
+    @Override
     public void start()
     {
         log.info("Starting");
@@ -252,6 +325,12 @@ public class CuratorFrameworkImpl implements CuratorFramework
                         logAsErrorConnectionErrors.set(true);
                     }
                 }
+
+                @Override
+                public boolean doNotDecorate()
+                {
+                    return true;
+                }
             };
 
             this.getConnectionStateListenable().addListener(listener);
@@ -268,6 +347,13 @@ public class CuratorFrameworkImpl implements CuratorFramework
                     return null;
                 }
             });
+
+            if ( ensembleTracker != null )
+            {
+                ensembleTracker.start();
+            }
+
+            log.info(schemaSet.toDocumentation());
         }
         catch ( Exception e )
         {
@@ -287,7 +373,7 @@ public class CuratorFrameworkImpl implements CuratorFramework
                 @Override
                 public Void apply(CuratorListener listener)
                 {
-                    CuratorEvent event = new CuratorEventImpl(CuratorFrameworkImpl.this, CuratorEventType.CLOSING, 0, null, null, null, null, null, null, null, null);
+                    CuratorEvent event = new CuratorEventImpl(CuratorFrameworkImpl.this, CuratorEventType.CLOSING, 0, null, null, null, null, null, null, null, null, null);
                     try
                     {
                         listener.eventReceived(CuratorFrameworkImpl.this, event);
@@ -315,11 +401,14 @@ public class CuratorFrameworkImpl implements CuratorFramework
                 }
             }
 
+            if ( ensembleTracker != null )
+            {
+                ensembleTracker.close();
+            }
             listeners.clear();
             unhandledErrorListeners.clear();
             connectionStateManager.close();
             client.close();
-            namespaceWatcherMap.close();
         }
     }
 
@@ -337,84 +426,108 @@ public class CuratorFrameworkImpl implements CuratorFramework
         return (str != null) ? str : "";
     }
 
+    private void checkState()
+    {
+        CuratorFrameworkState state = getState();
+        Preconditions.checkState(state == CuratorFrameworkState.STARTED, "Expected state [%s] was [%s]", CuratorFrameworkState.STARTED, state);
+    }
+
     @Override
     public CuratorFramework usingNamespace(String newNamespace)
     {
-        Preconditions.checkState(getState() == CuratorFrameworkState.STARTED, "instance must be started before calling this method");
-
+        checkState();
         return namespaceFacadeCache.get(newNamespace);
     }
 
     @Override
     public CreateBuilder create()
     {
-        Preconditions.checkState(getState() == CuratorFrameworkState.STARTED, "instance must be started before calling this method");
-
+        checkState();
         return new CreateBuilderImpl(this);
     }
 
     @Override
     public DeleteBuilder delete()
     {
-        Preconditions.checkState(getState() == CuratorFrameworkState.STARTED, "instance must be started before calling this method");
-
+        checkState();
         return new DeleteBuilderImpl(this);
     }
 
     @Override
     public ExistsBuilder checkExists()
     {
-        Preconditions.checkState(getState() == CuratorFrameworkState.STARTED, "instance must be started before calling this method");
-
+        checkState();
         return new ExistsBuilderImpl(this);
     }
 
     @Override
     public GetDataBuilder getData()
     {
-        Preconditions.checkState(getState() == CuratorFrameworkState.STARTED, "instance must be started before calling this method");
-
+        checkState();
         return new GetDataBuilderImpl(this);
     }
 
     @Override
     public SetDataBuilder setData()
     {
-        Preconditions.checkState(getState() == CuratorFrameworkState.STARTED, "instance must be started before calling this method");
-
+        checkState();
         return new SetDataBuilderImpl(this);
     }
 
     @Override
     public GetChildrenBuilder getChildren()
     {
-        Preconditions.checkState(getState() == CuratorFrameworkState.STARTED, "instance must be started before calling this method");
-
+        checkState();
         return new GetChildrenBuilderImpl(this);
     }
 
     @Override
     public GetACLBuilder getACL()
     {
-        Preconditions.checkState(getState() == CuratorFrameworkState.STARTED, "instance must be started before calling this method");
-
+        checkState();
         return new GetACLBuilderImpl(this);
     }
 
     @Override
     public SetACLBuilder setACL()
     {
-        Preconditions.checkState(getState() == CuratorFrameworkState.STARTED, "instance must be started before calling this method");
-
+        checkState();
         return new SetACLBuilderImpl(this);
+    }
+
+    @Override
+    public ReconfigBuilder reconfig()
+    {
+        Preconditions.checkState(!isZk34CompatibilityMode(), "reconfig/config APIs are not support when running in ZooKeeper 3.4 compatibility mode");
+        return new ReconfigBuilderImpl(this);
+    }
+
+    @Override
+    public GetConfigBuilder getConfig()
+    {
+        Preconditions.checkState(!isZk34CompatibilityMode(), "reconfig/config APIs are not support when running in ZooKeeper 3.4 compatibility mode");
+        return new GetConfigBuilderImpl(this);
     }
 
     @Override
     public CuratorTransaction inTransaction()
     {
-        Preconditions.checkState(getState() == CuratorFrameworkState.STARTED, "instance must be started before calling this method");
-
+        checkState();
         return new CuratorTransactionImpl(this);
+    }
+
+    @Override
+    public CuratorMultiTransaction transaction()
+    {
+        checkState();
+        return new CuratorMultiTransactionImpl(this);
+    }
+
+    @Override
+    public TransactionOp transactionOp()
+    {
+        checkState();
+        return new TransactionOpImpl(this);
     }
 
     @Override
@@ -438,7 +551,7 @@ public class CuratorFrameworkImpl implements CuratorFramework
     @Override
     public void sync(String path, Object context)
     {
-        Preconditions.checkState(getState() == CuratorFrameworkState.STARTED, "instance must be started before calling this method");
+        checkState();
 
         path = fixForNamespace(path);
 
@@ -451,10 +564,17 @@ public class CuratorFrameworkImpl implements CuratorFramework
         return new SyncBuilderImpl(this);
     }
 
+    @Override
+    public RemoveWatchesBuilder watches()
+    {
+        Preconditions.checkState(!isZk34CompatibilityMode(), "Remove watches APIs are not support when running in ZooKeeper 3.4 compatibility mode");
+        return new RemoveWatchesBuilderImpl(this);
+    }
+
     protected void internalSync(CuratorFrameworkImpl impl, String path, Object context)
     {
         BackgroundOperation<String> operation = new BackgroundSyncImpl(impl, context);
-        performBackgroundOperation(new OperationAndData<String>(operation, path, null, null, context));
+        performBackgroundOperation(new OperationAndData<String>(operation, path, null, null, context, null));
     }
 
     @Override
@@ -469,6 +589,12 @@ public class CuratorFrameworkImpl implements CuratorFramework
         return namespace.newNamespaceAwareEnsurePath(path);
     }
 
+    @Override
+    public SchemaSet getSchemaSet()
+    {
+        return schemaSet;
+    }
+
     ACLProvider getAclProvider()
     {
         return aclProvider;
@@ -477,6 +603,11 @@ public class CuratorFrameworkImpl implements CuratorFramework
     FailedDeleteManager getFailedDeleteManager()
     {
         return failedDeleteManager;
+    }
+
+    FailedRemoveWatchManager getFailedRemoveWatcherManager()
+    {
+        return failedRemoveWatcherManager;
     }
 
     RetryLoop newRetryLoop()
@@ -533,12 +664,18 @@ public class CuratorFrameworkImpl implements CuratorFramework
         }
     }
 
-    <DATA_TYPE> void queueOperation(OperationAndData<DATA_TYPE> operationAndData)
+    /**
+     * @param operationAndData operation entry
+     * @return true if the operation was actually queued, false if not
+     */
+    <DATA_TYPE> boolean queueOperation(OperationAndData<DATA_TYPE> operationAndData)
     {
         if ( getState() == CuratorFrameworkState.STARTED )
         {
             backgroundOperations.offer(operationAndData);
+            return true;
         }
+        return false;
     }
 
     void logError(String reason, final Throwable e)
@@ -609,16 +746,11 @@ public class CuratorFrameworkImpl implements CuratorFramework
         return namespaceFacadeCache;
     }
 
-    NamespaceWatcherMap getNamespaceWatcherMap()
-    {
-        return namespaceWatcherMap;
-    }
-
     void validateConnection(Watcher.Event.KeeperState state)
     {
         if ( state == Watcher.Event.KeeperState.Disconnected )
         {
-            suspendConnection();
+            internalConnectionHandler.suspendConnection(this);
         }
         else if ( state == Watcher.Event.KeeperState.Expired )
         {
@@ -626,11 +758,24 @@ public class CuratorFrameworkImpl implements CuratorFramework
         }
         else if ( state == Watcher.Event.KeeperState.SyncConnected )
         {
+            internalConnectionHandler.checkNewConnection(this);
             connectionStateManager.addStateChange(ConnectionState.RECONNECTED);
+            unSleepBackgroundOperations();
         }
         else if ( state == Watcher.Event.KeeperState.ConnectedReadOnly )
         {
+            internalConnectionHandler.checkNewConnection(this);
             connectionStateManager.addStateChange(ConnectionState.READ_ONLY);
+        }
+    }
+
+    void checkInstanceIndex()
+    {
+        long instanceIndex = client.getInstanceIndex();
+        long newInstanceIndex = currentInstanceIndex.getAndSet(instanceIndex);
+        if ( (newInstanceIndex >= 0) && (instanceIndex != newInstanceIndex) )   // currentInstanceIndex is initially -1 - ignore this
+        {
+            connectionStateManager.addStateChange(ConnectionState.LOST);
         }
     }
 
@@ -664,41 +809,30 @@ public class CuratorFrameworkImpl implements CuratorFramework
         return Watcher.Event.KeeperState.fromInt(-1);
     }
 
-    private void suspendConnection()
+    WatcherRemovalManager getWatcherRemovalManager()
     {
-        if ( !connectionStateManager.setToSuspended() )
-        {
-            return;
-        }
-
-        doSyncForSuspendedConnection(client.getInstanceIndex());
+        return null;
     }
 
-    private void doSyncForSuspendedConnection(final long instanceIndex)
+    boolean setToSuspended()
     {
-        // we appear to have disconnected, force a new ZK event and see if we can connect to another server
-        final BackgroundOperation<String> operation = new BackgroundSyncImpl(this, null);
-        OperationAndData.ErrorCallback<String> errorCallback = new OperationAndData.ErrorCallback<String>()
-        {
-            @Override
-            public void retriesExhausted(OperationAndData<String> operationAndData)
-            {
-                // if instanceIndex != newInstanceIndex, the ZooKeeper instance was reset/reallocated
-                // so the pending background sync is no longer valid.
-                // if instanceIndex is -1, this is the second try to sync - punt and mark the connection lost
-                if ( (instanceIndex < 0) || (instanceIndex == client.getInstanceIndex()) )
-                {
-                    connectionStateManager.addStateChange(ConnectionState.LOST);
-                }
-                else
-                {
-                    log.debug("suspendConnection() failure ignored as the ZooKeeper instance was reset. Retrying.");
-                    // send -1 to signal that if it happens again, punt and mark the connection lost
-                    doSyncForSuspendedConnection(-1);
-                }
-            }
-        };
-        performBackgroundOperation(new OperationAndData<String>(operation, "/", null, errorCallback, null));
+        return connectionStateManager.setToSuspended();
+    }
+
+    void addStateChange(ConnectionState newConnectionState)
+    {
+        connectionStateManager.addStateChange(newConnectionState);
+    }
+
+    @Override
+    public boolean isZk34CompatibilityMode()
+    {
+        return zk34CompatibilityMode;
+    }
+
+    EnsembleTracker getEnsembleTracker()
+    {
+        return ensembleTracker;
     }
 
     @SuppressWarnings({"ThrowableResultOfMethodCallIgnored"})
@@ -822,11 +956,11 @@ public class CuratorFrameworkImpl implements CuratorFramework
         }
     }
 
-    private void performBackgroundOperation(OperationAndData<?> operationAndData)
+    void performBackgroundOperation(OperationAndData<?> operationAndData)
     {
         try
         {
-            if ( client.isConnected() )
+            if ( !operationAndData.isConnectionRequired() || client.isConnected() )
             {
                 operationAndData.callPerformBackgroundOperation();
             }
@@ -837,8 +971,7 @@ public class CuratorFrameworkImpl implements CuratorFramework
                 {
                     throw new CuratorConnectionLossException();
                 }
-                operationAndData.sleepFor(1, TimeUnit.SECONDS);
-                queueOperation(operationAndData);
+                sleepAndQueueOperation(operationAndData);
             }
         }
         catch ( Throwable e )
@@ -853,7 +986,7 @@ public class CuratorFrameworkImpl implements CuratorFramework
             if ( e instanceof CuratorConnectionLossException )
             {
                 WatchedEvent watchedEvent = new WatchedEvent(Watcher.Event.EventType.None, Watcher.Event.KeeperState.Disconnected, null);
-                CuratorEvent event = new CuratorEventImpl(this, CuratorEventType.WATCHED, KeeperException.Code.CONNECTIONLOSS.intValue(), null, null, operationAndData.getContext(), null, null, null, watchedEvent, null);
+                CuratorEvent event = new CuratorEventImpl(this, CuratorEventType.WATCHED, KeeperException.Code.CONNECTIONLOSS.intValue(), null, null, operationAndData.getContext(), null, null, null, watchedEvent, null, null);
                 if ( checkBackgroundRetry(operationAndData, event) )
                 {
                     queueOperation(operationAndData);
@@ -866,6 +999,33 @@ public class CuratorFrameworkImpl implements CuratorFramework
             else
             {
                 handleBackgroundOperationException(operationAndData, e);
+            }
+        }
+    }
+
+    @VisibleForTesting
+    volatile long sleepAndQueueOperationSeconds = 1;
+
+    private void sleepAndQueueOperation(OperationAndData<?> operationAndData) throws InterruptedException
+    {
+        operationAndData.sleepFor(sleepAndQueueOperationSeconds, TimeUnit.SECONDS);
+        if ( queueOperation(operationAndData) )
+        {
+            forcedSleepOperations.add(operationAndData);
+        }
+    }
+
+    private void unSleepBackgroundOperations()
+    {
+        Collection<OperationAndData<?>> drain = new ArrayList<>(forcedSleepOperations.size());
+        forcedSleepOperations.drainTo(drain);
+        log.debug("Clearing sleep for {} operations", drain.size());
+        for ( OperationAndData<?> operation : drain )
+        {
+            operation.clearSleep();
+            if ( backgroundOperations.remove(operation) )   // due to the internals of DelayQueue, operation must be removed/re-added so that re-sorting occurs
+            {
+                backgroundOperations.offer(operation);
             }
         }
     }

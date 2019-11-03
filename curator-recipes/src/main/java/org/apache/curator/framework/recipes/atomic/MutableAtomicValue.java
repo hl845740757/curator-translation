@@ -18,20 +18,11 @@
  */
 package org.apache.curator.framework.recipes.atomic;
 
-/**
- * 可变的原子值对象
- * @param <T> 数据的表示对象
- */
 class MutableAtomicValue<T> implements AtomicValue<T>
 {
-    /** 原子对象操作前的值 */
     T preValue;
-    /** 原子对象操作后的值 */
     T postValue;
-    /** 操作是否成功 */
     boolean succeeded = false;
-
-    /** 更新操作的过程信息 */
     AtomicStats stats = new AtomicStats();
 
     MutableAtomicValue(T preValue, T postValue)

@@ -22,16 +22,18 @@ package org.apache.curator.framework.recipes.locks;
 import com.google.common.collect.Lists;
 import org.apache.curator.framework.CuratorFramework;
 import org.apache.curator.framework.CuratorFrameworkFactory;
+import org.apache.curator.framework.imps.TestCleanState;
 import org.apache.curator.framework.state.ConnectionState;
 import org.apache.curator.framework.state.ConnectionStateListener;
 import org.apache.curator.retry.ExponentialBackoffRetry;
 import org.apache.curator.test.BaseClassForTests;
-import org.apache.curator.test.KillSession;
 import org.apache.curator.test.TestingServer;
 import org.apache.curator.test.Timing;
+import org.apache.curator.test.compatibility.Timing2;
 import org.apache.curator.utils.CloseableUtils;
+import org.apache.curator.utils.Compatibility;
 import org.apache.curator.utils.ZKPaths;
-import org.apache.zookeeper.CreateMode;
+import org.apache.zookeeper.KeeperException;
 import org.testng.Assert;
 import org.testng.annotations.Test;
 import java.util.List;
@@ -56,6 +58,28 @@ public abstract class TestInterProcessMutexBase extends BaseClassForTests
     protected abstract InterProcessLock makeLock(CuratorFramework client);
 
     @Test
+    public void testLocker() throws Exception
+    {
+        final Timing timing = new Timing();
+        final CuratorFramework client = CuratorFrameworkFactory.newClient(server.getConnectString(), timing.session(), timing.connection(), new ExponentialBackoffRetry(100, 3));
+        try
+        {
+            client.start();
+
+            InterProcessLock lock = makeLock(client);
+            try ( Locker locker = new Locker(lock, timing.milliseconds(), TimeUnit.MILLISECONDS) )
+            {
+                Assert.assertTrue(lock.isAcquiredInThisProcess());
+            }
+            Assert.assertFalse(lock.isAcquiredInThisProcess());
+        }
+        finally
+        {
+            CloseableUtils.closeQuietly(client);
+        }
+    }
+
+    @Test
     public void testWaitingProcessKilledServer() throws Exception
     {
         final Timing timing = new Timing();
@@ -70,7 +94,7 @@ public abstract class TestInterProcessMutexBase extends BaseClassForTests
                 @Override
                 public void stateChanged(CuratorFramework client, ConnectionState newState)
                 {
-                    if ( newState == ConnectionState.LOST )
+                    if ( !newState.isConnected() )
                     {
                         latch.countDown();
                     }
@@ -79,6 +103,7 @@ public abstract class TestInterProcessMutexBase extends BaseClassForTests
             client.getConnectionStateListenable().addListener(listener);
 
             final AtomicBoolean isFirst = new AtomicBoolean(true);
+            final Object result = new Object();
             ExecutorCompletionService<Object> service = new ExecutorCompletionService<Object>(Executors.newFixedThreadPool(2));
             for ( int i = 0; i < 2; ++i )
             {
@@ -98,7 +123,7 @@ public abstract class TestInterProcessMutexBase extends BaseClassForTests
                                     timing.sleepABit();
 
                                     server.stop();
-                                    Assert.assertTrue(timing.awaitLatch(latch));
+                                    Assert.assertTrue(timing.forWaiting().awaitLatch(latch));
                                     server.restart();
                                 }
                             }
@@ -108,12 +133,12 @@ public abstract class TestInterProcessMutexBase extends BaseClassForTests
                                 {
                                     lock.release();
                                 }
-                                catch ( Exception e )
+                                catch ( KeeperException.SessionExpiredException dummy )
                                 {
-                                    // ignore
+                                    // happens sometimes with a few tests - ignore
                                 }
                             }
-                            return null;
+                            return result;
                         }
                     }
                 );
@@ -121,19 +146,19 @@ public abstract class TestInterProcessMutexBase extends BaseClassForTests
 
             for ( int i = 0; i < 2; ++i )
             {
-                service.take().get(timing.forWaiting().milliseconds(), TimeUnit.MILLISECONDS);
+                Assert.assertEquals(service.take().get(timing.forWaiting().milliseconds(), TimeUnit.MILLISECONDS), result);
             }
         }
         finally
         {
-            CloseableUtils.closeQuietly(client);
+            TestCleanState.closeAndTestClean(client);
         }
     }
 
     @Test
     public void testKilledSession() throws Exception
     {
-        final Timing timing = new Timing();
+        final Timing2 timing = new Timing2();
 
         CuratorFramework client = CuratorFrameworkFactory.newClient(server.getConnectString(), timing.session(), timing.connection(), new ExponentialBackoffRetry(100, 3));
         client.start();
@@ -175,8 +200,8 @@ public abstract class TestInterProcessMutexBase extends BaseClassForTests
                 );
 
             Assert.assertTrue(timing.acquireSemaphore(semaphore, 1));
-            KillSession.kill(client.getZookeeperClient().getZooKeeper(), server.getConnectString());
-            Assert.assertTrue(timing.acquireSemaphore(semaphore, 1));
+            Compatibility.injectSessionExpiration(client.getZookeeperClient().getZooKeeper());
+            Assert.assertTrue(timing.forSessionSleep().acquireSemaphore(semaphore, 1));
         }
         finally
         {
@@ -195,7 +220,7 @@ public abstract class TestInterProcessMutexBase extends BaseClassForTests
 
         server.close();
 
-        System.setProperty("container.checkIntervalMs", "10");
+        System.setProperty("znode.container.checkIntervalMs", "10");
         try
         {
             server = new TestingServer();
@@ -256,7 +281,7 @@ public abstract class TestInterProcessMutexBase extends BaseClassForTests
         }
         finally
         {
-            System.clearProperty("container.checkIntervalMs");
+            System.clearProperty("znode.container.checkIntervalMs");
         }
     }
 
@@ -278,7 +303,7 @@ public abstract class TestInterProcessMutexBase extends BaseClassForTests
         }
         finally
         {
-            client.close();
+            TestCleanState.closeAndTestClean(client);
         }
     }
 
@@ -344,7 +369,7 @@ public abstract class TestInterProcessMutexBase extends BaseClassForTests
         }
         finally
         {
-            client.close();
+            TestCleanState.closeAndTestClean(client);
         }
     }
 
@@ -390,7 +415,7 @@ public abstract class TestInterProcessMutexBase extends BaseClassForTests
         }
         finally
         {
-            client.close();
+            TestCleanState.closeAndTestClean(client);
         }
     }
 
@@ -407,7 +432,7 @@ public abstract class TestInterProcessMutexBase extends BaseClassForTests
         }
         finally
         {
-            client.close();
+            TestCleanState.closeAndTestClean(client);
         }
     }
 
@@ -539,11 +564,14 @@ public abstract class TestInterProcessMutexBase extends BaseClassForTests
                 Assert.assertTrue(acquiredLatchForClient1.await(10, TimeUnit.SECONDS));
                 Assert.assertTrue(mutexForClient1.isAcquiredInThisProcess());
             }
+
+            future1.get();
+            future2.get();
         }
         finally
         {
-            CloseableUtils.closeQuietly(client1);
-            CloseableUtils.closeQuietly(client2);
+            TestCleanState.closeAndTestClean(client1);
+            TestCleanState.closeAndTestClean(client2);
         }
     }
 }

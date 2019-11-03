@@ -31,25 +31,34 @@ import org.apache.curator.framework.api.Pathable;
 import org.apache.curator.framework.api.UnhandledErrorListener;
 import org.apache.curator.framework.api.WatchPathable;
 import org.apache.zookeeper.AsyncCallback;
+import org.apache.zookeeper.KeeperException;
 import org.apache.zookeeper.Watcher;
 import org.apache.zookeeper.data.Stat;
 import java.util.List;
 import java.util.concurrent.Callable;
 import java.util.concurrent.Executor;
 
-class GetChildrenBuilderImpl implements GetChildrenBuilder, BackgroundOperation<String>, ErrorListenerPathable<List<String>>
+public class GetChildrenBuilderImpl implements GetChildrenBuilder, BackgroundOperation<String>, ErrorListenerPathable<List<String>>
 {
     private final CuratorFrameworkImpl client;
     private Watching watching;
     private Backgrounding backgrounding;
-    private Stat responseStat;
+    private Stat                                    responseStat;
 
     GetChildrenBuilderImpl(CuratorFrameworkImpl client)
     {
         this.client = client;
-        watching = new Watching();
+        watching = new Watching(client);
         backgrounding = new Backgrounding();
         responseStat = null;
+    }
+
+    public GetChildrenBuilderImpl(CuratorFrameworkImpl client, Watcher watcher, Backgrounding backgrounding, Stat responseStat)
+    {
+        this.client = client;
+        this.watching = new Watching(client, watcher);
+        this.backgrounding = backgrounding;
+        this.responseStat = responseStat;
     }
 
     @Override
@@ -139,7 +148,7 @@ class GetChildrenBuilderImpl implements GetChildrenBuilder, BackgroundOperation<
     @Override
     public BackgroundPathable<List<String>> watched()
     {
-        watching = new Watching(true);
+        watching = new Watching(client, true);
         return this;
     }
 
@@ -168,12 +177,13 @@ class GetChildrenBuilderImpl implements GetChildrenBuilder, BackgroundOperation<
                 @Override
                 public void processResult(int rc, String path, Object o, List<String> strings, Stat stat)
                 {
-                    trace.setReturnCode(rc).setPath(path).setWithWatcher(watching.getWatcher() != null).setStat(stat).commit();
+                    watching.commitWatcher(rc, false);
+                    trace.setReturnCode(rc).setPath(path).setWithWatcher(watching.hasWatcher()).setStat(stat).commit();
                     if ( strings == null )
                     {
                         strings = Lists.newArrayList();
                     }
-                    CuratorEventImpl event = new CuratorEventImpl(client, CuratorEventType.CHILDREN, rc, path, null, o, stat, null, strings, null, null);
+                    CuratorEventImpl event = new CuratorEventImpl(client, CuratorEventType.CHILDREN, rc, path, null, o, stat, null, strings, null, null, null);
                     client.processBackgroundOperation(operationAndData, event);
                 }
             };
@@ -183,24 +193,26 @@ class GetChildrenBuilderImpl implements GetChildrenBuilder, BackgroundOperation<
             }
             else
             {
-                client.getZooKeeper().getChildren(operationAndData.getData(), watching.getWatcher(), callback, backgrounding.getContext());
+                client.getZooKeeper().getChildren(operationAndData.getData(), watching.getWatcher(operationAndData.getData()), callback, backgrounding.getContext());
             }
         }
         catch ( Throwable e )
         {
-            backgrounding.checkError(e);
+            backgrounding.checkError(e, watching);
         }
     }
 
     @Override
     public List<String> forPath(String path) throws Exception
     {
+        client.getSchemaSet().getSchema(path).validateWatch(path, watching.isWatched() || watching.hasWatcher());
+
         path = client.fixForNamespace(path);
 
         List<String>        children = null;
         if ( backgrounding.inBackground() )
         {
-            client.processBackgroundOperation(new OperationAndData<String>(this, path, backgrounding.getCallback(), null, backgrounding.getContext()), null);
+            client.processBackgroundOperation(new OperationAndData<String>(this, path, backgrounding.getCallback(), null, backgrounding.getContext(), watching), null);
         }
         else
         {
@@ -227,13 +239,14 @@ class GetChildrenBuilderImpl implements GetChildrenBuilder, BackgroundOperation<
                     }
                     else
                     {
-                        children = client.getZooKeeper().getChildren(path, watching.getWatcher(), responseStat);
+                        children = client.getZooKeeper().getChildren(path, watching.getWatcher(path), responseStat);
+                        watching.commitWatcher(KeeperException.NoNodeException.Code.OK.intValue(), false);
                     }
                     return children;
                 }
             }
         );
-        trace.setPath(path).setWithWatcher(watching.getWatcher() != null).setStat(responseStat).commit();
+        trace.setPath(path).setWithWatcher(watching.hasWatcher()).setStat(responseStat).commit();
         return children;
     }
 }

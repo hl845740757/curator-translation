@@ -6,9 +6,9 @@
  * to you under the Apache License, Version 2.0 (the
  * "License"); you may not use this file except in compliance
  * with the License.  You may obtain a copy of the License at
- * <p>
- * http://www.apache.org/licenses/LICENSE-2.0
- * <p>
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
  * Unless required by applicable law or agreed to in writing,
  * software distributed under the License is distributed on an
  * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
@@ -20,35 +20,33 @@ package org.apache.curator.retry;
 
 import org.apache.curator.RetryPolicy;
 import org.apache.curator.RetrySleeper;
-
 import java.util.concurrent.TimeUnit;
 
-/**
- * 睡眠一段时间再进行重试的重试策略。
- * 它是一个抽象类 - 制定了一个模板。
- */
-abstract class SleepingRetry implements RetryPolicy {
-    /**
-     * 最大重试测试
-     */
+abstract class SleepingRetry implements RetryPolicy
+{
     private final int n;
 
-    protected SleepingRetry(int n) {
+    protected SleepingRetry(int n)
+    {
         this.n = n;
     }
 
     // made public for testing
-    public int getN() {
+    public int getN()
+    {
         return n;
     }
 
-    public boolean allowRetry(int retryCount, long elapsedTimeMs, RetrySleeper sleeper) {
-        if (retryCount < n) {
-            // 如果最大重试测试
-            try {
+    public boolean allowRetry(int retryCount, long elapsedTimeMs, RetrySleeper sleeper)
+    {
+        if ( retryCount < n )
+        {
+            try
+            {
                 sleeper.sleepFor(getSleepTimeMs(retryCount, elapsedTimeMs), TimeUnit.MILLISECONDS);
-            } catch (InterruptedException e) {
-                // 被中断 - 表示用户期望退出
+            }
+            catch ( InterruptedException e )
+            {
                 Thread.currentThread().interrupt();
                 return false;
             }
@@ -57,11 +55,5 @@ abstract class SleepingRetry implements RetryPolicy {
         return false;
     }
 
-    /**
-     * 计算本次睡眠的时间
-     * @param retryCount 这是第几次重试 - 首次重试时该值为0
-     * @param elapsedTimeMs 操作开始到现在已过去的时间
-     * @return 本次睡眠时间
-     */
-    protected abstract long getSleepTimeMs(int retryCount, long elapsedTimeMs);
+    protected abstract long   getSleepTimeMs(int retryCount, long elapsedTimeMs);
 }

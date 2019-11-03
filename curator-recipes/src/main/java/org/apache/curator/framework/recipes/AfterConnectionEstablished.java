@@ -34,8 +34,6 @@ public class AfterConnectionEstablished
     private final static Logger log = LoggerFactory.getLogger(AfterConnectionEstablished.class);
 
     /**
-     * 生成一个新的后台线程，该线程将阻塞直到连接可用，然后执行“runAfterConnection”逻辑
-     *
      * Spawns a new new background thread that will block until a connection is available and
      * then execute the 'runAfterConnection' logic
      *

@@ -21,17 +21,16 @@ package org.apache.curator.framework.imps;
 import org.apache.curator.RetryLoop;
 import org.apache.curator.drivers.OperationTrace;
 import org.apache.curator.framework.api.*;
-import org.apache.curator.framework.api.transaction.CuratorTransactionBridge;
 import org.apache.curator.framework.api.transaction.OperationType;
 import org.apache.curator.framework.api.transaction.TransactionSetDataBuilder;
 import org.apache.zookeeper.AsyncCallback;
 import org.apache.zookeeper.Op;
+import org.apache.zookeeper.ZooDefs;
 import org.apache.zookeeper.data.Stat;
-
 import java.util.concurrent.Callable;
 import java.util.concurrent.Executor;
 
-class SetDataBuilderImpl implements SetDataBuilder, BackgroundOperation<PathAndBytes>, ErrorListenerPathAndBytesable<Stat>
+public class SetDataBuilderImpl implements SetDataBuilder, BackgroundOperation<PathAndBytes>, ErrorListenerPathAndBytesable<Stat>
 {
     private final CuratorFrameworkImpl      client;
     private Backgrounding                   backgrounding;
@@ -46,12 +45,20 @@ class SetDataBuilderImpl implements SetDataBuilder, BackgroundOperation<PathAndB
         compress = false;
     }
 
-    TransactionSetDataBuilder   asTransactionSetDataBuilder(final CuratorTransactionImpl curatorTransaction, final CuratorMultiTransactionRecord transaction)
+    public SetDataBuilderImpl(CuratorFrameworkImpl client, Backgrounding backgrounding, int version, boolean compress)
     {
-        return new TransactionSetDataBuilder()
+        this.client = client;
+        this.backgrounding = backgrounding;
+        this.version = version;
+        this.compress = compress;
+    }
+
+    <T> TransactionSetDataBuilder<T> asTransactionSetDataBuilder(final T context, final CuratorMultiTransactionRecord transaction)
+    {
+        return new TransactionSetDataBuilder<T>()
         {
             @Override
-            public CuratorTransactionBridge forPath(String path, byte[] data) throws Exception
+            public T forPath(String path, byte[] data) throws Exception
             {
                 if ( compress )
                 {
@@ -60,26 +67,26 @@ class SetDataBuilderImpl implements SetDataBuilder, BackgroundOperation<PathAndB
 
                 String      fixedPath = client.fixForNamespace(path);
                 transaction.add(Op.setData(fixedPath, data, version), OperationType.SET_DATA, path);
-                return curatorTransaction;
+                return context;
             }
 
             @Override
-            public CuratorTransactionBridge forPath(String path) throws Exception
+            public T forPath(String path) throws Exception
             {
                 return forPath(path, client.getDefaultData());
             }
 
             @Override
-            public PathAndBytesable<CuratorTransactionBridge> withVersion(int version)
+            public PathAndBytesable<T> withVersion(int version)
             {
                 SetDataBuilderImpl.this.withVersion(version);
                 return this;
             }
 
             @Override
-            public VersionPathAndBytesable<CuratorTransactionBridge> compressed() {
+            public VersionPathAndBytesable<T> compressed()
+            {
                 compress = true;
-
                 return this;
             }
         };
@@ -222,7 +229,7 @@ class SetDataBuilderImpl implements SetDataBuilder, BackgroundOperation<PathAndB
                     public void processResult(int rc, String path, Object ctx, Stat stat)
                     {
                         trace.setReturnCode(rc).setRequestBytesLength(data).setPath(path).setStat(stat).commit();
-                        CuratorEvent event = new CuratorEventImpl(client, CuratorEventType.SET_DATA, rc, path, null, ctx, stat, null, null, null, null);
+                        CuratorEvent event = new CuratorEventImpl(client, CuratorEventType.SET_DATA, rc, path, null, ctx, stat, null, null, null, null, null);
                         client.processBackgroundOperation(operationAndData, event);
                     }
                 },
@@ -231,7 +238,7 @@ class SetDataBuilderImpl implements SetDataBuilder, BackgroundOperation<PathAndB
         }
         catch ( Throwable e )
         {
-            backgrounding.checkError(e);
+            backgrounding.checkError(e, null);
         }
     }
 
@@ -244,6 +251,8 @@ class SetDataBuilderImpl implements SetDataBuilder, BackgroundOperation<PathAndB
     @Override
     public Stat forPath(String path, byte[] data) throws Exception
     {
+        client.getSchemaSet().getSchema(path).validateGeneral(path, data, null);
+
         if ( compress )
         {
             data = client.getCompressionProvider().compress(path, data);
@@ -254,7 +263,7 @@ class SetDataBuilderImpl implements SetDataBuilder, BackgroundOperation<PathAndB
         Stat        resultStat = null;
         if ( backgrounding.inBackground()  )
         {
-            client.processBackgroundOperation(new OperationAndData<PathAndBytes>(this, new PathAndBytes(path, data), backgrounding.getCallback(), null, backgrounding.getContext()), null);
+            client.processBackgroundOperation(new OperationAndData<>(this, new PathAndBytes(path, data), backgrounding.getCallback(), null, backgrounding.getContext(), null), null);
         }
         else
         {
