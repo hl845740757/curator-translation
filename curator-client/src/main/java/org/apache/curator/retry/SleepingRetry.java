@@ -29,7 +29,7 @@ import java.util.concurrent.TimeUnit;
  */
 abstract class SleepingRetry implements RetryPolicy {
     /**
-     * 最大重试测试
+     * 最大重试次数
      */
     private final int n;
 
@@ -44,7 +44,7 @@ abstract class SleepingRetry implements RetryPolicy {
 
     public boolean allowRetry(int retryCount, long elapsedTimeMs, RetrySleeper sleeper) {
         if (retryCount < n) {
-            // 如果最大重试测试
+            // 还可以继续重试
             try {
                 sleeper.sleepFor(getSleepTimeMs(retryCount, elapsedTimeMs), TimeUnit.MILLISECONDS);
             } catch (InterruptedException e) {

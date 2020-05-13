@@ -28,6 +28,8 @@ import java.util.function.Consumer;
 import java.util.function.Function;
 
 /**
+ * 该管理器应该是3.14之后出现的，较之于老的{@link ListenerContainer}，多了一个映射函数{@link #mapper}。
+ *
  * Upgraded version of {@link org.apache.curator.framework.listen.ListenerContainer} that
  * doesn't leak Guava's internals and also supports mapping/wrapping of listeners
  */

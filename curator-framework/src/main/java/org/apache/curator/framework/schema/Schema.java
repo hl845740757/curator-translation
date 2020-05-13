@@ -28,6 +28,8 @@ import java.util.Map;
 import java.util.regex.Pattern;
 
 /**
+ * 模式：用于表示和记录一个给定的路径模式上允许的操作。
+ *
  * Represents and documents operations allowed for a given path pattern
  */
 public class Schema

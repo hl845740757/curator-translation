@@ -24,6 +24,8 @@ import java.util.function.Function;
 import java.util.function.UnaryOperator;
 
 /**
+ * 对{@link MappingListenerManager}的又一个封装，提供了两个封装方法，以供选择是否对监听器进行重新映射。
+ *
  * Non mapping version of a listener container
  */
 public class StandardListenerManager<T> implements ListenerManager<T, T>

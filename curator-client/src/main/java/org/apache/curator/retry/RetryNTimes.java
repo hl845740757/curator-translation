@@ -42,6 +42,7 @@ public class RetryNTimes extends SleepingRetry
     @Override
     protected long getSleepTimeMs(int retryCount, long elapsedTimeMs)
     {
+        // 返回固定的睡眠时间
         return sleepMsBetweenRetries;
     }
 }

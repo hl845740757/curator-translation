@@ -18,6 +18,8 @@
  */
 package org.apache.curator.framework.listen;
 
+import com.google.common.util.concurrent.MoreExecutors;
+
 import java.util.concurrent.Executor;
 
 /**
@@ -30,7 +32,9 @@ public class ListenerEntry<T>
 {
     /** 持有的listener */
     public final T        listener;
-    /** 该listener对应的executor，该executor用于处理产生的事件。 */
+    /**
+     * 该listener的运行环境 - 默认为{@link MoreExecutors#directExecutor()}，即在事件派发线程立即执行。
+     */
     public final Executor executor;
 
     public ListenerEntry(T listener, Executor executor)
