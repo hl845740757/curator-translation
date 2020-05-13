@@ -14,7 +14,7 @@
     <inceptionYear>2017</inceptionYear>
 
     <properties>
-        <zookeeper-34-version>3.4.8</zookeeper-34-version>
+        <zookeeper-34-version>3.4.14</zookeeper-34-version>
     </properties>
 
     <dependencies>
